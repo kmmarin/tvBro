@@ -62,5 +62,26 @@ open class EpgIndex(private val map: Map<String, Array<Programme>> = emptyMap())
         return cur to next
     }
 
-    companion object { val EMPTY = EpgIndex(emptyMap()) }
+    companion object {
+        val EMPTY = EpgIndex(emptyMap())
+
+        /**
+         * One channel's programmes as a timeline: sorted by start, one programme per start time, and a programme that
+         * runs into the next one ends where the next one starts. Some providers send overlapping entries (10:00-14:00
+         * and 11:00-14:00); drawn as they were, blocks covered each other, focus went to a hidden block and the guide
+         * window jumped.
+         */
+        fun tidy(a: Array<Programme>): Array<Programme> {
+            if (a.size < 2) return a
+            val s = a.sortedWith(compareBy<Programme> { it.start }.thenByDescending { it.stop }).distinctBy { it.start }
+            val out = ArrayList<Programme>(s.size)
+            for (i in s.indices) {
+                val p = s[i]
+                val nx = s.getOrNull(i + 1)
+                val q = if (nx != null && p.stop > nx.start) p.copy(stop = nx.start) else p
+                if (q.stop > q.start) out += q
+            }
+            return out.toTypedArray()
+        }
+    }
 }
