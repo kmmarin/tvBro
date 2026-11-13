@@ -1,0 +1,33 @@
+<!doctype html>
+<!-- Copyright 2026 The tvBro authors. SPDX-License-Identifier: Apache-2.0 -->
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="color-scheme" content="dark">
+  <title>tvBro</title>
+  <link rel="stylesheet" href="css/style.css?v=__V__">
+  <!-- Players are vendored locally (LAN-only, no external CDN at runtime). -->
+  <script defer src="vendor/hls.min.js"></script>
+  <script defer src="vendor/mpegts.min.js"></script>
+</head>
+<body>
+  <div id="app">
+    <nav id="nav" aria-label="Main">
+      <div class="brand"><span class="logo">tv</span>Bro</div>
+      <button class="nav-item" data-screen="live" tabindex="0"><span class="ic">📺</span><span>TV</span></button>
+      <button class="nav-item" data-screen="movies" tabindex="0"><span class="ic">🎬</span><span>Movies</span></button>
+      <button class="nav-item" data-screen="series" tabindex="0"><span class="ic">📀</span><span>Shows</span></button>
+      <button class="nav-item" data-screen="mylist" tabindex="0"><span class="ic">★</span><span>My list</span></button>
+      <button class="nav-item" data-screen="search" tabindex="0"><span class="ic">🔍</span><span>Search</span></button>
+      <button class="nav-item" data-screen="recordings" tabindex="0"><span class="ic">⏺</span><span>Recordings</span></button>
+      <div class="nav-spacer"></div>
+      <button class="nav-item" data-screen="settings" tabindex="0"><span class="ic">⚙</span><span>Settings</span></button>
+    </nav>
+    <main id="main" aria-live="polite"><div class="loading">Loading…</div></main>
+  </div>
+  <div id="player-layer" hidden></div>
+  <div id="toast" role="status"></div>
+  <script type="module" src="js/app.js?v=__V__"></script>
+</body>
+</html>

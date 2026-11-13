@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Copyright 2026 The tvBro authors. SPDX-License-Identifier: Apache-2.0 -->
+<!-- IPTV playlists, guides and streams are very often plain http, so cleartext stays allowed in general.
+     The update check and APK download must never use cleartext: GitHub hosts are https only. -->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true">
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
+    <domain-config cleartextTrafficPermitted="false">
+        <domain includeSubdomains="false">github.com</domain>
+        <domain includeSubdomains="false">api.github.com</domain>
+        <domain includeSubdomains="false">objects.githubusercontent.com</domain>
+        <domain includeSubdomains="false">release-assets.githubusercontent.com</domain>
+    </domain-config>
+</network-security-config>

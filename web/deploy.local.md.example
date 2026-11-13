@@ -1,0 +1,26 @@
+<!-- Template: copy to web/deploy.local.md (gitignored) and fill in your own site. -->
+# tvBro web: my deployment
+
+## Update deploy
+```powershell
+powershell -File web\deploy\stage.ps1 -Out <dir>      # LF, ?v=<build> on CSS/JS + module imports, tar
+scp -q <dir>\tvbro-web.tar <dir>\stage\deploy\update_lxc.sh root@<proxmox-host>:/tmp/
+ssh root@<proxmox-host> 'pct push <ctid> /tmp/tvbro-web.tar /tmp/tvbro-web.tar; pct push <ctid> /tmp/update_lxc.sh /tmp/update_lxc.sh; pct exec <ctid> -- bash /tmp/update_lxc.sh restart'
+```
+Back up `state.db` first: `pct exec <ctid> -- bash -c 'cp -a /var/lib/tvbro/state.db /var/lib/tvbro/state.db.bak-$(date +%Y%m%d-%H%M%S)'`.
+
+Site settings in the container, `/etc/default/tvbro`:
+```
+TVBRO_SERVER_NAME=tvbro.example.lan
+TVBRO_ALLOWED_HOSTS=tvbro.example.lan
+```
+Encryption key: `/etc/credstore/tvbro.key` (root 0600). Keep a copy somewhere safe.
+
+## The container
+- Proxmox host: `<proxmox-host>`, container id `<ctid>`, Debian 12, unprivileged.
+- Address: `<ip>/<prefix>`, gateway `<gw>`, DNS `<resolver>`.
+- Cert: how it is issued and copied to `/etc/nginx/certs/tvbro/` (`fullchain.pem`, `privkey.pem` 0600).
+- LAN DNS record: `tvbro.example.lan -> <ip>` on `<resolver>`.
+
+## Open items
+- …

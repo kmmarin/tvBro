@@ -1,0 +1,39 @@
+# Copyright 2026 The tvBro authors. SPDX-License-Identifier: Apache-2.0
+# systemd unit for the tvBro web backend. Runs as an unprivileged user, binds to
+# localhost only (nginx fronts it), and exits cleanly on stop.
+# The encryption key is a systemd credential (/etc/credstore/tvbro.key, root 0600, made by
+# setup_lxc.sh / update_lxc.sh): it is outside the data folder, so a copy or backup of
+# /var/lib/tvbro alone cannot decrypt the provider login. Site settings (TVBRO_ALLOWED_HOSTS,
+# TVBRO_SERVER_NAME, optional TVBRO_ALLOW_PRIVATE_SOURCES) come from /etc/default/tvbro.
+[Unit]
+Description=tvBro web backend (LAN-only IPTV proxy)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=tvbro
+Group=tvbro
+WorkingDirectory=/opt/tvbro/server
+Environment=TVBRO_BIND=127.0.0.1
+Environment=TVBRO_PORT=8750
+Environment=TVBRO_DATA=/var/lib/tvbro
+EnvironmentFile=-/etc/default/tvbro
+LoadCredential=tvbro.key:/etc/credstore/tvbro.key
+ExecStart=/usr/bin/python3 /opt/tvbro/server/run.py
+Restart=on-failure
+RestartSec=3
+# hardening
+StateDirectory=tvbro
+StateDirectoryMode=0750
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/tvbro
+CPUQuota=60%
+MemoryMax=512M
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,8 @@
+<!-- Copyright 2026 The tvBro authors. SPDX-License-Identifier: Apache-2.0 -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="96dp" android:height="96dp" android:viewportWidth="96" android:viewportHeight="96">
+    <path android:fillColor="#0E1116" android:pathData="M12,0h72a12,12 0 0,1 12,12v72a12,12 0 0,1 -12,12h-72a12,12 0 0,1 -12,-12v-72a12,12 0 0,1 12,-12z" />
+    <path android:fillColor="#4FC3F7" android:pathData="M36,30L66,48L36,66z" />
+    <path android:strokeColor="#4FC3F7" android:strokeWidth="4" android:strokeLineCap="round" android:pathData="M18,28A36,36 0 0,1 18,68" />
+    <path android:strokeColor="#4FC3F7" android:strokeWidth="4" android:strokeLineCap="round" android:strokeAlpha="0.5" android:pathData="M8,20A48,48 0 0,1 8,76" />
+</vector>

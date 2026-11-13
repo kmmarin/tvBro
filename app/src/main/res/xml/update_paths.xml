@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Copyright 2026 The tvBro authors. SPDX-License-Identifier: Apache-2.0 -->
+<!-- Only the downloaded update APK in the app cache is shared, and only with the system installer. -->
+<paths>
+    <cache-path name="updates" path="updates/" />
+</paths>

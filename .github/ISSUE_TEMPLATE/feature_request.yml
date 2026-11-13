@@ -1,0 +1,23 @@
+name: Feature request
+description: An idea for tvBro
+labels: [feature]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What would you like tvBro to do?
+      description: Describe the behaviour, not another app ("like app X" is not enough; tvBro is a clean-room project).
+    validations:
+      required: true
+  - type: textarea
+    id: why
+    attributes:
+      label: Why is it useful / how would you use it with the remote?
+  - type: checkboxes
+    id: platforms
+    attributes:
+      label: Platforms
+      options:
+        - label: Android / Android TV / Fire TV
+        - label: Windows / Raspberry Pi
+        - label: Web

@@ -1,0 +1,33 @@
+tvBro
+Copyright 2026 The tvBro authors. Licensed under the Apache License 2.0.
+
+tvBro is a media player only. It ships no channels, streams, playlists or other content and is not
+affiliated with any content provider. Users add their own sources and are responsible for having the
+rights to them.
+
+This product includes software developed by third parties, each under its own license; the full
+list with versions is in docs/THIRD_PARTY.md. In short:
+
+Android app:
+- AndroidX (Jetpack Compose, Activity, Lifecycle, Core, Work, Room, Security-crypto, ProfileInstaller,
+  Media3 ExoPlayer / HLS / UI / OkHttp datasource), Google Tink, Guava, Gson: Apache-2.0
+- Kotlin stdlib, kotlinx.coroutines, kotlinx.serialization, kotlinx-datetime: Apache-2.0
+- OkHttp / Okio (Square): Apache-2.0
+- ZXing core (QR code encoder): Apache-2.0
+- jcifs-ng (SMB/CIFS client for recording to a network share): LGPL-2.1, used unmodified as a separate
+  library; source https://github.com/AgNO3/jcifs-ng. With it: Bouncy Castle (MIT-style), SLF4J API (MIT)
+
+Desktop app (Windows x64, Linux arm64):
+- JetBrains Compose Multiplatform for Desktop, Skiko: Apache-2.0; Skia: BSD-3-Clause
+- JNA / JNA Platform: Apache-2.0 (dual-licensed with LGPL-2.1)
+- kXML2: BSD-style; sqlite-jdbc: Apache-2.0 (SQLite: public domain)
+- Bundled Java runtime (Eclipse Temurin OpenJDK 17): GPL-2.0 with Classpath Exception,
+  source https://github.com/adoptium/jdk17u
+- libmpv (video engine) is loaded at run time as a separate shared library and is not part of the
+  tvBro distribution: on Linux the system package (libmpv2), on Windows a libmpv-2.dll the user
+  installs (see docs/INSTALL.md). mpv: https://github.com/mpv-player/mpv
+
+Web app:
+- cryptography (Python): Apache-2.0 OR BSD-3-Clause
+- hls.js, mpegts.js (fetched at deploy time): Apache-2.0
+- FFmpeg is run as an external program installed by the operator; it is not distributed with tvBro.

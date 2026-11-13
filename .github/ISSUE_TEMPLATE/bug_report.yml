@@ -1,0 +1,63 @@
+name: Bug report
+description: Something does not work as it should
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting. Please do **not** paste server addresses, usernames, passwords or playlist URLs.
+  - type: dropdown
+    id: platform
+    attributes:
+      label: Platform
+      options:
+        - Android TV / Google TV
+        - Fire TV
+        - Android phone or tablet
+        - Windows
+        - Raspberry Pi / Linux
+        - Web (self-hosted)
+    validations:
+      required: true
+  - type: input
+    id: device
+    attributes:
+      label: Device and system version
+      placeholder: "e.g. Fire TV Stick 4K Max, Fire OS 8 / Chromecast with Google TV, Android 12"
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: tvBro version
+      description: Settings > About
+      placeholder: "0.1.0"
+    validations:
+      required: true
+  - type: dropdown
+    id: source
+    attributes:
+      label: Source type
+      options: [Xtream, M3U + XMLTV, Both / several, Not relevant]
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps (which remote buttons you pressed)
+      placeholder: |
+        1. Open Live TV
+        2. Press Left twice, then OK on a group
+        3. Press Down ...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected and what happened instead
+    validations:
+      required: true
+  - type: textarea
+    id: diag
+    attributes:
+      label: Diagnostics (optional)
+      description: Settings > About > Diagnostics. Remove anything that looks like an address or login.
+      render: text

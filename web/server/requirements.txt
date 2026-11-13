@@ -1,0 +1,8 @@
+# tvBro web backend runtime dependencies.
+# Standard library covers HTTP, JSON, XML and media relay; only encryption is external.
+# pip installs: 44.0.1 or newer (CVE-2024-12797 in the bundled OpenSSL). For a locked install,
+#   pip-compile --generate-hashes requirements.txt -o requirements.lock
+#   pip install --require-hashes -r requirements.lock
+# Debian 12 containers use the distribution's python3-cryptography (security backports via
+# unattended-upgrades) instead; setup_lxc.sh installs that.
+cryptography>=44.0.1

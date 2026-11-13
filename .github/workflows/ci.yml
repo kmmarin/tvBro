@@ -1,0 +1,104 @@
+# Copyright 2026 The tvBro authors
+# SPDX-License-Identifier: Apache-2.0
+# Tests on every push and pull request to dev and main. Builds nothing that is published.
+name: CI
+
+on:
+  push:
+    branches: [dev, main]
+  pull_request:
+    branches: [dev, main]
+  # The release workflow runs this whole file first and publishes nothing unless every job passes.
+  workflow_call:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  privacy:
+    name: Personal-data scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python tools/check_private.py
+      - name: gitleaks (secrets in history)
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  supply-chain:
+    name: Wrapper validation and vulnerability scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: gradle/actions/wrapper-validation@v4
+      # Python (web/server/requirements.txt) and any other lockfiles osv-scanner understands.
+      - name: osv-scanner
+        run: |
+          curl -fsSL -o osv-scanner https://github.com/google/osv-scanner/releases/download/v2.0.2/osv-scanner_linux_amd64
+          chmod +x osv-scanner
+          ./osv-scanner scan source -r . || { echo "::warning::osv-scanner reported known vulnerabilities"; exit 1; }
+
+  android:
+    name: Shared + Android tests, debug APK
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: gradle/actions/setup-gradle@v4
+      - run: ./gradlew --no-daemon :shared:test :app:testDebugUnitTest :app:assembleDebug
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: android-test-reports
+          path: |
+            app/build/reports/tests
+            shared/build/reports/tests
+
+  desktop:
+    name: Desktop tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: gradle/actions/setup-gradle@v4
+      # Headless Compose UI tests need a virtual display on Linux.
+      - run: xvfb-run -a ./gradlew --no-daemon :desktop:test
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: desktop-test-reports
+          path: desktop/build/reports/tests
+
+  web:
+    name: Web server and frontend tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg
+      - run: pip install -r web/server/requirements.txt
+      - run: python -m unittest discover -s web/tests
+      - run: >-
+          node --test web/tests/guide.test.mjs web/tests/vod.test.mjs web/tests/reminders.test.mjs
+          web/tests/playfmt.test.mjs web/tests/resume.test.mjs web/tests/livefix.test.mjs

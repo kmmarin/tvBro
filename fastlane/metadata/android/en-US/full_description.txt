@@ -1,0 +1,27 @@
+<p><b>tvBro</b> is a free, open-source IPTV player for Android TV, Google TV, Fire TV, phones and tablets.</p>
+<p>tvBro is a <b>player only</b>: it contains no channels, streams or playlists. Add the Xtream Codes login or the M3U playlist (with an XMLTV guide) of a service you already have and the rights to watch.</p>
+<p><b>Live TV and guide</b></p>
+<ul>
+<li>TV screen with a live preview above the guide grid, full-screen guide, programme details</li>
+<li>Catch-up (Xtream timeshift and M3U catch-up), favourites, own groups, rename / hide / reorder</li>
+<li>Number zapping, last channel on start, reconnect and alternate-stream fallback, picture-in-picture</li>
+</ul>
+<p><b>Films and series</b></p>
+<ul>
+<li>Posters, categories, details, seasons and episodes</li>
+<li>Continue watching, resume, watched marks, Up next, per-series audio and subtitle language</li>
+</ul>
+<p><b>Search, recording, reminders</b></p>
+<ul>
+<li>Fast full-text search over channels, programmes, films and shows, voice search</li>
+<li>Record now or from the guide, series recordings, storage on the device, USB or an SMB network share</li>
+<li>Reminders with a "starting now" pop-up</li>
+</ul>
+<p><b>More</b></p>
+<ul>
+<li>Add a source from your phone with a QR code: no typing on the remote</li>
+<li>Several playlists, parental PIN, backup and restore, audio and subtitle tracks, aspect, audio delay, sleep timer, frame-rate matching</li>
+<li>Dark theme, clear focus, made for the remote</li>
+<li>No ads, no tracking, no account</li>
+</ul>
+<p>Apache-2.0. Source, issues and install guides: https://github.com/kmmarin/tvBro</p>

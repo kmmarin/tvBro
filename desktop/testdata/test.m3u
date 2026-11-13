@@ -1,0 +1,5 @@
+#EXTM3U url-tvg="test.xml"
+#EXTINF:-1 tvg-id="bbb" tvg-chno="1" group-title="Test",Test HLS (Mux)
+https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8
+#EXTINF:-1 tvg-id="bipbop" tvg-chno="2" group-title="Test",Bipbop (Apple sample)
+https://devstreaming-cdn.apple.com/videos/streaming/examples/bipbop_4x3/bipbop_4x3_variant.m3u8

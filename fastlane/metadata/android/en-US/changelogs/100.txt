@@ -1,0 +1,4 @@
+First public release (0.1.0).
+- Live TV with guide, catch-up, films and series, search, recording, reminders
+- Xtream and M3U/XMLTV sources, add from your phone with a QR code
+- In-app update check (Settings > About, can be turned off)

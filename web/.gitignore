@@ -1,0 +1,10 @@
+# Runtime data (encrypted login, tokens, caches) must never be committed.
+server/data/
+# Vendored players are fetched at deploy time (see deploy/setup_lxc.sh), not committed.
+frontend/vendor/
+__pycache__/
+*.pyc
+# This site's private deployment notes (host names, addresses, container id); the template
+# deploy.local.md.example is committed.
+deploy.local.*
+!deploy.local.*.example

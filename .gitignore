@@ -1,0 +1,27 @@
+.gradle/
+.kotlin/
+build/
+local.properties
+*.iml
+.idea/
+captures/
+# Build outputs are published as GitHub Release assets, never committed
+out/*
+!out/.gitkeep
+tools/bsc/
+**/node_modules/
+__pycache__/
+*.pyc
+*.log
+
+# Release signing: never commit keys or their passwords (see keystore.properties.example, docs/RELEASE.md)
+keystore.properties
+*.jks
+*.keystore
+*.p12
+
+# Local-only release helpers: private scrub patterns and machine-specific deploy settings
+tools/private-patterns.txt
+tools/*.local.*
+deploy.local.*
+tools/demo/cache/
