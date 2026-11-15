@@ -19,6 +19,10 @@ object Net {
     val client: OkHttpClient = OkHttpClient.Builder()
         .connectTimeout(20, TimeUnit.SECONDS)
         .readTimeout(60, TimeUnit.SECONDS)
+        .apply {
+            if (CoreSwitch.core(CoreSwitch.Row.URL_GUARD)) { dns(Guard.dns); addInterceptor(Guard); addNetworkInterceptor(Guard) }
+            else if (CoreSwitch.shadow(CoreSwitch.Row.URL_GUARD)) { dns(Guard.shadowDns); addInterceptor(Guard.Shadow("request")); addNetworkInterceptor(Guard.Shadow("hop")) }
+        }
         .build()
 
     fun request(url: String): Request = Request.Builder().url(url).header("User-Agent", "tvBro/0.1").build()
@@ -132,8 +136,26 @@ class Repository(ctx: Context, private val gentle: Boolean = false) {
     private fun looksM3u(f: File) = head(f).let { it.contains("#EXTM3U") || it.contains("#EXTINF") }
 
     /** Keep-old-data rule: a downloaded channel list is accepted only when it parses to at least one channel. */
-    private fun m3uHasChannels(f: File) = looksM3u(f) && SyncRules.accept(sd.input(f).bufferedReader().use { M3uParser.parse(it.lineSequence(), "x").channels.size })
-    private fun xtreamHasStreams(f: File) = looksJsonList(f) && SyncRules.accept(try { sd.input(f).use { Xtream.liveStreams(it).size } } catch (e: Exception) { 0 })
+    private fun m3uHasChannels(f: File) = looksM3u(f) && SyncRules.accept(parseM3u(f, "x").channels.size)
+    /**
+     * Download check of row XTREAM: a list cut off mid-way is refused on both paths (Kotlin's strict decoder fails,
+     * the core checks the list is complete), so the previous list stays.
+     */
+    private fun xtreamHasStreams(f: File): Boolean {
+        if (!looksJsonList(f)) return false
+        val kotlin = { try { sd.input(f).use { Xtream.liveStreams(it).size } } catch (e: Exception) { 0 } }
+        val core = { try { Core.xtreamCountStrict(sd.input(f).use { it.readBytes() }) } catch (e: Exception) { 0 } }
+        return SyncRules.accept(when {
+            CoreSwitch.core(CoreSwitch.Row.XTREAM) -> core()
+            CoreSwitch.shadow(CoreSwitch.Row.XTREAM) -> kotlin().also { CoreShadow.check("xtream", it, core()) }
+            else -> kotlin()
+        })
+    }
+
+    /** Row M3U of [CoreSwitch]: the Kotlin parser or the core (same channels and keys; CoreParityTest). */
+    private fun parseM3u(f: File, sourceId: String): M3uResult =
+        if (CoreSwitch.core(CoreSwitch.Row.M3U)) Core.m3u(sd.input(f).use { it.readBytes() }, sourceId)
+        else sd.input(f).bufferedReader().use { M3uParser.parse(it.lineSequence(), sourceId) }
     private fun catalogueHasItems(series: Boolean) = { f: File -> looksJsonList(f) && SyncRules.accept(sd.input(f).use { VodApi.eachVod(it, series, "x", emptyList(), "check") { } }) }
 
     private fun mb(n: Long) = "%.1f MB".format(n / 1048576.0)
@@ -162,11 +184,18 @@ class Repository(ctx: Context, private val gentle: Boolean = false) {
         }
         val out = if (s.isXtream) {
             val cats = File(dir, "${s.id}.cats.json")
-            val c = if (sd.exists(cats)) sd.input(cats).use { Xtream.categories(it) } else emptyList()
-            val l = sd.input(main).use { Xtream.liveStreams(it) }
-            Xtream.toChannels(s.id, s.server, s.user, s.pass, c, l)
+            val core = { Core.xtreamLive(if (sd.exists(cats)) sd.input(cats).use { it.readBytes() } else ByteArray(0), sd.input(main).use { it.readBytes() }, s.id, s.server, s.user, s.pass) }
+            if (CoreSwitch.core(CoreSwitch.Row.XTREAM)) core()
+            else {
+                val t1 = System.nanoTime()
+                val c = if (sd.exists(cats)) sd.input(cats).use { Xtream.categories(it) } else emptyList()
+                val l = sd.input(main).use { Xtream.liveStreams(it) }
+                Xtream.toChannels(s.id, s.server, s.user, s.pass, c, l).also { if (CoreSwitch.shadow(CoreSwitch.Row.XTREAM)) CoreShadow.channels("xtream", it, ms(t1), core) }
+            }
         } else {
-            val res = sd.input(main).bufferedReader().use { M3uParser.parse(it.lineSequence(), s.id) }
+            val t1 = System.nanoTime()
+            val res = parseM3u(main, s.id)
+            if (CoreSwitch.shadow(CoreSwitch.Row.M3U)) CoreShadow.channels("m3u", res.channels, ms(t1)) { Core.m3u(sd.input(main).use { it.readBytes() }, s.id).channels }
             sd.writeText(File(dir, "${s.id}.epgurl"), res.epgUrls.joinToString(","))
             res.channels
         }
@@ -238,6 +267,12 @@ class Repository(ctx: Context, private val gentle: Boolean = false) {
         val now = System.currentTimeMillis() / 1000
         val pastDays = (channels.maxOfOrNull { it.catchupDays } ?: 0).coerceIn(1, 14) // longest catch-up window, default 1 day
         val db = EpgDb.get(appCtx)
+        // row EPG of CoreSwitch: the core parses (gzip limits, XMLTV) and writes epg.db itself; shadow: Kotlin writes,
+        // the core parses the same file afterwards and only the comparison is kept
+        val core = db as? CoreGuideDb
+        val shadow = core == null && CoreSwitch.shadow(CoreSwitch.Row.EPG)
+        val minStop = now - pastDays * 86400L
+        val maxStart = now + 7 * 86400L
         val gen = db.beginRefresh(s.id)
         val batch = ArrayList<Programme>(500)
         val ids = HashMap<String, List<String>>()
@@ -252,22 +287,42 @@ class Repository(ctx: Context, private val gentle: Boolean = false) {
                 try {
                     download(url, tmp, "xmltv") { n -> SyncStatus.step(s.id, k, "downloading ${mb(n)}") }
                     SyncStatus.step(s.id, k, "reading")
+                    if (core != null) {
+                        val before = total
+                        var shown = before / 5000
+                        val r = core.loadGuide(s.id, gen, sd.input(tmp), wanted, minStop, maxStart) { n ->
+                            val all = before + n
+                            if (all / 5000 != shown.toLong()) { shown = (all / 5000).toInt(); SyncStatus.step(s.id, k, "saving · $all programmes") }
+                            if (gentle) { Thread.sleep(3); Refresh.sample() }
+                        }
+                        total += r.programmes.toInt()
+                        minS = minOf(minS, r.minStart); maxS = maxOf(maxS, r.maxStop)
+                        if (r.error != null) throw SafeIOException("guide not read (${r.error})")
+                        for (n in r.names) ids[n.id] = listOf(n.name)
+                        Diag.log("guide: core stored ${r.programmes} programmes, log peak ${r.walPeak.toLong() / 1048576} MB")
+                        ok = true
+                        continue
+                    }
+                    val t1 = System.nanoTime()
+                    val dig = if (shadow) CoreShadow.Digest() else null
                     val raw = BufferedInputStream(sd.input(tmp), 32 * 1024)
                     raw.mark(2)
                     val b0 = raw.read(); val b1 = raw.read()
                     raw.reset()
                     // inflated guides are capped too (a gzip bomb would otherwise run for ever)
                     val inp: InputStream = if (b0 == 0x1f && b1 == 0x8b) Capped(GZIPInputStream(raw, 32 * 1024), 2_000_000_000L) else raw
-                    inp.use {
+                    val kotlinErr = try {
+                        inp.use {
                         val p = Xml.newPullParser()
                         p.setInput(it, null)
                         ids.putAll(XmltvParser.parse(p, { ch, names ->
                             val l = ch.lowercase()
                             if (l in wanted) "${s.id}|$l"
                             else names?.firstNotNullOfOrNull { n -> n.lowercase().takeIf { x -> x in wanted } }?.let { "${s.id}|$it" }
-                        }, now - pastDays * 86400L, now + 7 * 86400L) { pr ->
+                        }, minStop, maxStart) { pr ->
                             val dd = pr.desc
                             val q = if (dd != null && dd.length > 160) pr.copy(desc = dd.take(160)) else pr
+                            dig?.add(q)
                             batch += q; total++
                             if (total % 5000 == 0) SyncStatus.step(s.id, k, "saving · $total programmes")
                             if (q.start < minS) minS = q.start
@@ -277,7 +332,16 @@ class Repository(ctx: Context, private val gentle: Boolean = false) {
                                 if (gentle) { Thread.sleep(3); Refresh.sample() }
                             }
                         })
+                        }
+                        null
+                    } catch (e: Exception) { e }
+                    if (dig != null) {
+                        val km = ms(t1)
+                        val t2 = System.nanoTime()
+                        try { CoreShadow.guide(dig, km, Core.guideDigest(sd.input(tmp), s.id, wanted, minStop, maxStart), ms(t2)) }
+                        catch (e: Exception) { CoreShadow.log("guide: core failed (${e.javaClass.simpleName})") }
                     }
+                    if (kotlinErr != null) throw kotlinErr
                     ok = true
                 } catch (e: Exception) { err = e } finally { tmp.delete() }
             }
@@ -343,7 +407,8 @@ class Repository(ctx: Context, private val gentle: Boolean = false) {
     /** Series / movie details, cached on disk for 7 days (stale copy used if the refresh fails). */
     fun info(s: Source, series: Boolean, id: String): String {
         val f = File(dir, "${s.id}.info.${if (series) "s" else "m"}.${id.filter { it.isLetterOrDigit() }}.json")
-        if (sd.exists(f) && !stale(f, 24 * 7)) return sd.readText(f)
+        // (a damaged file: fetched again; it showed "Could not load details: sealed chunk failed its check")
+        if (sd.exists(f) && !stale(f, 24 * 7)) sd.readTextOrDrop(f)?.let { return it }
         try { download(Xtream.apiUrl(s.server, s.user, s.pass, (if (series) "get_series_info&series_id=" else "get_vod_info&vod_id=") + java.net.URLEncoder.encode(id, "UTF-8")), f, "details") }
         catch (e: Exception) { if (!sd.exists(f)) throw e }
         return sd.readText(f)

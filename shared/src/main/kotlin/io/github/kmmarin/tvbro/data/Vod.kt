@@ -83,6 +83,13 @@ object VodApi {
     fun movieUrl(server: String, u: String, p: String, id: String, ext: String) = "${Xtream.normalizeServer(server)}/movie/$u/$p/$id.$ext"
     fun episodeUrl(server: String, u: String, p: String, id: String, ext: String) = "${Xtream.normalizeServer(server)}/series/$u/$p/$id.$ext"
 
+    /**
+     * A provider's JSON as a tree. JSON nested thousands of levels deep overflows the reader's recursion: that is an
+     * Error, which the callers' `catch (e: Exception)` would miss (the app would end), so it becomes an exception.
+     */
+    private fun tree(text: String): JsonElement =
+        try { Xtream.json.parseToJsonElement(text) } catch (e: StackOverflowError) { throw IllegalArgumentException("JSON nested too deeply") }
+
     /** Streams the top-level elements of a JSON list (or a map of id to object); tolerant of a BOM and error objects. */
     private fun elements(input: InputStream, what: String): Iterator<JsonElement> {
         val b = input.buffered()
@@ -95,7 +102,7 @@ object VodApi {
         if (c == '['.code) {
             return Xtream.json.decodeToSequence(b, JsonElement.serializer(), DecodeSequenceMode.ARRAY_WRAPPED).iterator()
         }
-        val root = Xtream.json.parseToJsonElement(b.readBytes().decodeToString())
+        val root = tree(b.readBytes().decodeToString())
         if (root is JsonObject) {
             val items = root.values.filterIsInstance<JsonObject>().filter { it.containsKey("name") || it.containsKey("category_id") || it.containsKey("stream_id") || it.containsKey("series_id") }
             if (items.isEmpty()) Diag.log("$what: response is an object without items (keys=${root.keys.take(5).joinToString(",")})")
@@ -118,8 +125,12 @@ object VodApi {
         var idx = 0
         var bad = 0
         val it = try { elements(input, what) } catch (e: Exception) { Diag.log("$what: unreadable response (${e.javaClass.simpleName})"); return 0 }
+            catch (e: StackOverflowError) { Diag.log("$what: unreadable response (nested too deeply)"); return 0 }
         while (true) {
+            // (an item nested thousands of levels deep overflows the JSON reader's recursion: an Error, not an
+            // Exception, that would end the app; the list stops there like at any other damage)
             val el = try { if (!it.hasNext()) break; it.next() } catch (e: Exception) { Diag.log("$what: stream error after item $idx (${e.javaClass.simpleName}), keeping $idx items"); break }
+                catch (e: StackOverflowError) { Diag.log("$what: item ${idx + 1} nested too deeply, keeping $idx items"); break }
             idx++
             val o = el as? JsonObject
             if (o == null) { bad++; if (bad <= 5) Diag.log("$what: item $idx is not an object"); continue }
@@ -179,7 +190,7 @@ object VodApi {
     )
 
     fun parseVodInfo(text: String): VodDetail {
-        val root = Xtream.json.parseToJsonElement(text) as? JsonObject ?: JsonObject(emptyMap())
+        val root = tree(text) as? JsonObject ?: JsonObject(emptyMap())
         return detail(obj(root["info"]), emptyList(), obj(root["movie_data"]).s("container_extension"))
     }
 
@@ -192,7 +203,7 @@ object VodApi {
 
     /** `episodes` is normally an object keyed by season, but some panels send an array (of seasons or of episodes). */
     fun parseSeriesInfo(text: String): VodDetail {
-        val root = Xtream.json.parseToJsonElement(text) as? JsonObject ?: JsonObject(emptyMap())
+        val root = tree(text) as? JsonObject ?: JsonObject(emptyMap())
         val eps = ArrayList<Episode>()
         when (val e = root["episodes"]) {
             is JsonObject -> e.forEach { (season, arr) ->

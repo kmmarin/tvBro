@@ -45,19 +45,27 @@ object UpdateLogic {
         return false
     }
 
+    /** "abi-arm64-v8a-1.2.3.apk" -> "arm64-v8a": the per-ABI APKs of a release (see [parseLatest]); null for others. */
+    fun abiOf(name: String): String? = Regex("^abi-(arm64-v8a|armeabi-v7a|x86_64|x86)-.+\\.apk$", RegexOption.IGNORE_CASE).find(name)?.groupValues?.get(1)?.lowercase()
+
     /**
      * Parses the JSON of GET /repos/{owner}/{repo}/releases/latest (which already skips drafts and
-     * pre-releases). Picks the APK asset: a non-debug ".apk", preferring one whose name contains "tvbro".
+     * pre-releases). Picks the APK asset: the per-ABI APK ("abi-<abi>-<version>.apk", about half the size) for the
+     * first of the device's [abis] (`Build.SUPPORTED_ABIS`, preferred first) that the release has; otherwise the
+     * universal APK: a non-debug ".apk", preferring one whose name contains "tvbro". The per-ABI names deliberately
+     * do not contain "tvbro", so updaters older than the splits keep choosing the universal APK.
      */
-    fun parseLatest(body: String, repo: String): ReleaseInfo? {
+    fun parseLatest(body: String, repo: String, abis: List<String> = emptyList()): ReleaseInfo? {
         val o = json.parseToJsonElement(body).jsonObject
         if (o.bool("draft") || o.bool("prerelease")) return null
         val tag = o.str("tag_name") ?: return null
         val version = tag.removePrefix("v").removePrefix("V")
         if (parse(version) == null) return null
-        val assets = o["assets"]?.jsonArray?.map { it.jsonObject }.orEmpty()
+        val all = o["assets"]?.jsonArray?.map { it.jsonObject }.orEmpty()
             .filter { (it.str("name") ?: "").endsWith(".apk", ignoreCase = true) && !(it.str("name") ?: "").contains("debug", ignoreCase = true) }
-        val apk = assets.firstOrNull { (it.str("name") ?: "").contains("tvbro", ignoreCase = true) } ?: assets.firstOrNull() ?: return null
+        val assets = all.filter { abiOf(it.str("name") ?: "") == null }
+        val split = abis.firstNotNullOfOrNull { abi -> all.firstOrNull { abiOf(it.str("name") ?: "") == abi.lowercase() } }
+        val apk = split ?: assets.firstOrNull { (it.str("name") ?: "").contains("tvbro", ignoreCase = true) } ?: assets.firstOrNull() ?: return null
         val url = apk.str("browser_download_url") ?: return null
         if (!isAllowedAssetUrl(url, repo)) return null
         val sums = o["assets"]?.jsonArray?.map { it.jsonObject }.orEmpty()

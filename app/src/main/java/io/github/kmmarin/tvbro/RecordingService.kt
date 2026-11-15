@@ -37,8 +37,9 @@ class RecordingService : Service() {
 
     private fun notif(): Notification {
         val nm = getSystemService(NotificationManager::class.java)
-        nm.createNotificationChannel(NotificationChannel("rec", "Recording", NotificationManager.IMPORTANCE_LOW))
-        return Notification.Builder(this, "rec").setSmallIcon(applicationInfo.icon)
+        if (android.os.Build.VERSION.SDK_INT >= 26) nm.createNotificationChannel(NotificationChannel("rec", "Recording", NotificationManager.IMPORTANCE_LOW))
+        // (NotificationCompat: Notification.Builder(context, channel) does not exist before Android 8, e.g. Fire TV Stick 4K)
+        return androidx.core.app.NotificationCompat.Builder(this, "rec").setSmallIcon(applicationInfo.icon)
             .setContentTitle("tvBro is recording").setContentText("${jobs.size} active recording(s)").build()
     }
 
@@ -170,17 +171,17 @@ class RecReceiver : BroadcastReceiver() {
                 val r = io.github.kmmarin.tvbro.data.Reminders.items.firstOrNull { it.id == id } ?: return
                 if (io.github.kmmarin.tvbro.data.Reminders.appVisible) return // the open app shows its pop-up (AppModel.dueReminder)
                 val nm = ctx.getSystemService(NotificationManager::class.java)
-                nm.createNotificationChannel(NotificationChannel("remind", "Programme reminders", NotificationManager.IMPORTANCE_HIGH))
+                if (android.os.Build.VERSION.SDK_INT >= 26) nm.createNotificationChannel(NotificationChannel("remind", "Programme reminders", NotificationManager.IMPORTANCE_HIGH))
                 val open = android.app.PendingIntent.getActivity(ctx, id.hashCode(),
                     Intent(ctx, MainActivity::class.java).putExtra("play", r.chKey).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP),
                     android.app.PendingIntent.FLAG_UPDATE_CURRENT or android.app.PendingIntent.FLAG_IMMUTABLE)
-                nm.notify(id.hashCode(), Notification.Builder(ctx, "remind").setSmallIcon(ctx.applicationInfo.icon)
+                nm.notify(id.hashCode(), androidx.core.app.NotificationCompat.Builder(ctx, "remind").setSmallIcon(ctx.applicationInfo.icon)
                     .setContentTitle("Starting soon: ${r.title}").setContentText(r.channel + " (select to watch)").setContentIntent(open).setAutoCancel(true).build())
                 io.github.kmmarin.tvbro.data.Reminders.remove(ctx, id)
             }
             "io.github.kmmarin.tvbro.RUN" -> {
                 val id = i.getStringExtra("id") ?: return
-                try { ctx.startForegroundService(Intent(ctx, RecordingService::class.java).setAction("start").putExtra("id", id)) }
+                try { androidx.core.content.ContextCompat.startForegroundService(ctx, Intent(ctx, RecordingService::class.java).setAction("start").putExtra("id", id)) }
                 catch (e: Exception) { RecRepo.init(ctx); RecRepo.get(id)?.let { RecRepo.put(it.copy(status = "failed", note = "could not start service")) } }
             }
         }

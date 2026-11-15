@@ -78,16 +78,16 @@ fun TvField(
         else if (was) {
             was = false
             delay(50)
-            runCatching { boxFr.requestFocus() } // (also after the keyboard took focus away: back on this field)            lost = false
+            runCatching { boxFr.requestFocus() } // (also after the keyboard took focus away: back on this field)
+            lost = false
             leave?.let { d -> leave = null; delay(30); fm.moveFocus(d) }
         }
     }
     Column(modifier) {
-        Text(label, color = TextDim, fontSize = 13.sp)
+        if (label.isNotEmpty()) Text(label, color = TextDim, fontSize = 13.sp)
         if (!editing) {
             Box(
-                Modifier.fillMaxWidth().focusRequester(boxFr).tvFocus(shape) { editing = true }
-                    .border(1.dp, TextDim.copy(alpha = 0.4f), shape).padding(12.dp),
+                Modifier.fillMaxWidth().focusRequester(boxFr).tvFocus(shape, rest = Surface, outline = true) { editing = true }.padding(12.dp),
             ) {
                 val shown = if (password) "*".repeat(value.length) else value
                 Text(if (shown.isEmpty()) "Press OK to type" else shown, color = if (shown.isEmpty()) TextDim else TextMain, fontSize = 18.sp, maxLines = 1)
@@ -112,87 +112,9 @@ fun TvField(
                             else -> false
                         }
                     }
-                    .background(if (f) FocusBg else Surface, shape)
-                    .border(3.dp, Accent, shape)
+                    .fieldLook(f, shape)
                     .padding(12.dp),
             )
-        }
-    }
-}
-@Composable
-fun ListScreen(m: AppModel) {
-    val groups = m.groupList
-    val list = m.filtered
-    val now = rememberNow()
-    val startIdx = remember { maxOf(0, list.indexOfFirst { it.key == m.current?.key }) }
-    val state = rememberLazyListState(initialFirstVisibleItemIndex = startIdx)
-    val fr = remember { FocusRequester() }
-    LaunchedEffect(m.channels.isNotEmpty()) {
-        if (m.channels.isNotEmpty()) { delay(150); runCatching { fr.requestFocus() } }
-    }
-    Row(Modifier.fillMaxSize().background(Bg).padding(24.dp)) {
-        Column(Modifier.width(260.dp).fillMaxHeight()) {
-            Text("tvBro", color = Accent, fontSize = 24.sp, modifier = Modifier.padding(bottom = 12.dp))
-            LazyColumn(Modifier.weight(1f)) {
-                items(groups) { g ->
-                    val sel = g == m.group
-                    Text(
-                        (if (sel) "> " else "  ") + m.groupLabel(g), color = if (sel) Accent else TextMain, fontSize = 17.sp,
-                        maxLines = 1, overflow = TextOverflow.Ellipsis,
-                        modifier = Modifier.fillMaxWidth().focusProperties { right = if (list.isNotEmpty()) fr else FocusRequester.Default }.tvFocus(onLongClick = { m.openGroupMenu(g) }) { m.selectGroup(g) }.padding(10.dp),
-                    )
-                }
-            }
-            TvButton("TV guide", Modifier.fillMaxWidth()) { m.screen = Screen.GUIDE }
-            TvButton("Movies", Modifier.fillMaxWidth()) { m.openVod(false) }
-            TvButton("Series", Modifier.fillMaxWidth()) { m.openVod(true) }
-            TvButton("Recordings", Modifier.fillMaxWidth()) { m.screen = Screen.RECORDINGS }
-            TvButton("Settings", Modifier.fillMaxWidth()) { m.screen = Screen.SETTINGS }
-        }
-        Spacer(Modifier.width(20.dp))
-        Column(Modifier.weight(1f)) {
-            TvField("Search", m.query, { m.query = it })
-            val status = m.loading.ifEmpty { m.message }
-            if (status.isNotEmpty()) Text(status, color = TextDim, fontSize = 14.sp, modifier = Modifier.padding(vertical = 4.dp))
-            if (list.isEmpty() && m.loading.isEmpty()) {
-                Text(
-                    if (m.group == GROUP_FAV) "No favourites yet. Long-press OK on a channel for its menu." else "No channels.",
-                    color = TextDim, modifier = Modifier.padding(16.dp),
-                )
-            }
-            LazyColumn(Modifier.weight(1f).padding(top = 8.dp), state = state) {
-                itemsIndexed(list) { i, c ->
-                    ChannelRow(m, c, now, Modifier.requesterIf(i == startIdx, fr))
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun ChannelRow(m: AppModel, c: Channel, now: Long, mod: Modifier) {
-    val (cur, next) = m.epg.nowNext(c, now)
-    Row(
-        mod.fillMaxWidth().tvFocus(onLongClick = { m.openChannelMenu(c) }) { m.play(c) }.padding(8.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Text(c.number.toString(), color = TextDim, fontSize = 16.sp, modifier = Modifier.width(56.dp))
-        Logo(c.logo, c.name)
-        Spacer(Modifier.width(12.dp))
-        Column(Modifier.weight(1f)) {
-            Row {
-                Text(c.name, color = TextMain, fontSize = 18.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, false))
-                if (c.key in m.favourites) Text("  *", color = Accent, fontSize = 18.sp)
-                if (c.catchup != null) Text("  [archive]", color = TextDim, fontSize = 12.sp)
-            }
-            if (cur != null) {
-                Text("${hhmm(cur.start)} ${cur.title}", color = TextMain.copy(alpha = 0.85f), fontSize = 14.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                Box(Modifier.fillMaxWidth().height(3.dp).background(Surface)) {
-                    val f = ((now - cur.start).toFloat() / (cur.stop - cur.start).coerceAtLeast(1)).coerceIn(0f, 1f)
-                    Box(Modifier.fillMaxWidth(f).height(3.dp).background(Accent))
-                }
-            }
-            if (next != null) Text("${hhmm(next.start)} ${next.title}", color = TextDim, fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
         }
     }
 }

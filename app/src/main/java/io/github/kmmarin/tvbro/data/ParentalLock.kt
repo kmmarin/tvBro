@@ -15,7 +15,7 @@ object ParentalLock {
      * limiter per activity would give 5 more tries per launch. In memory like the desktop's: ending the process
      * (force stop) starts over.
      */
-    val gate = PinGate()
+    val gate = PinGate(verify = Pins::verify)
 
     /** A channel of a locked group, or a single locked channel, not unlocked yet. */
     fun channel(p: Prefs, unlocked: Set<String>, group: String, key: String): Boolean =

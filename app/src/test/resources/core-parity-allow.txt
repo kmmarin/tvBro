@@ -1,0 +1,17 @@
+# CoreParityTest: accepted differences between the Kotlin implementation and the Rust core.
+# One per line: case id <TAB> reason. Anything not listed must be identical; an entry that no longer differs fails.
+m3u:huge-line	a line over 1 MB: the core cuts it at 1 MB (memory bound against files without newlines), Kotlin keeps it whole. No real playlist has 1 MB lines.
+xtream:null-strings	the text "null" in stream_icon / epg_channel_id: the core treats it as missing (web rule), Kotlin keeps "null" as the logo URL and guide id. The core's result is the intended one.
+pin:long-hash	a stored hash longer than 64 bytes (never written by any tvBro version): the core refuses it, Kotlin computes and compares it.
+xtream:missing-id	a stream without stream_id: the core skips it (web rule), Kotlin keeps it with the key "<source>|" and a stream URL ending in "/.ts" that cannot play.
+xtream:bom	a UTF-8 BOM before the JSON list: the core skips it and reads the list, Kotlin's JSON decoder fails and gives no channels (the download is then rejected as empty and the old list kept).
+xtream:map-root	a response that is a JSON object of id -> stream instead of a list (some panels): the core reads the streams, Kotlin's decoder fails and gives none.
+xtream:truncated	a list cut off mid-item (dropped connection), read from the cache: the core keeps the complete items before the damage, Kotlin's decoder fails and gives none. Such a download never reaches the cache: the download check refuses it on both paths (xtream-check:cut-* are identical).
+xmltv:hostile-astral-cut	a description whose 160th UTF-16 unit is the first half of a character outside the BMP (an emoji): Kotlin's take(160) keeps the lone high surrogate (not valid text; how Android's SQLite stores it is undefined), the core leaves the whole character out.
+xmltv:hostile-astral-cut:digest	the same row as xmltv:hostile-astral-cut (the digest hashes Kotlin's lone surrogate as '?').
+xmltv:hostile-bad-times	a programme time with month 13: Kotlin's parseTime accepts it (rolls into the next year), the core gives -1 and drops the programme (web rule, see docs/RUST_CORE.md, XMLTV).
+xmltv:hostile-bad-times:digest	the same programme as xmltv:hostile-bad-times.
+xtream-check:bom	download check of a whole list behind a UTF-8 BOM: the core accepts it (the list is complete), Kotlin's decoder fails and refuses it (the old list is kept).
+xtream-check:map-root	download check of a complete object of id -> stream: the core accepts it, Kotlin's decoder refuses it.
+xmltv:hostile-nested-and-empty	markup inside <title> (<title>T<b>bold</b></title>): Kotlin's pull parser (nextText) throws and the whole guide refresh fails (the old guide is kept); the core takes the element's text ("Tbold").
+search:fold-bmp-unassigned	characters the JVM running the test does not assign yet (JDK 17 has Unicode 13; e.g. Arabic U+0870-089F, Latin U+A7C0-A7DC, newer combining marks): the core's newer tables (Rust std, unicode-normalization) fold them as letters or marks, the JVM as separators. Kotlin's own result depends on the device's runtime (Android 7.1 has older tables still), so no single answer exists; on both sides the index and the query fold alike. Every assigned BMP character folds the same.

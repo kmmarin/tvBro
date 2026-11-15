@@ -24,4 +24,13 @@ object GroupOrder {
         val r = l.filter { it != key }
         return if (d < 0) listOf(key) + r else r + key
     }
+
+    /**
+     * The entry of [l] at [at] or the nearest one after it, else the nearest before it, that is not [avoid] and passes
+     * [ok]; the first entry when none does (where focus goes when a group leaves its place in the column).
+     */
+    fun <T> neighbour(l: List<T>, at: Int, avoid: T?, ok: (T) -> Boolean = { true }): T {
+        val i = at.coerceIn(0, (l.size - 1).coerceAtLeast(0))
+        return (l.drop(i) + l.take(i).reversed()).firstOrNull { it != avoid && ok(it) } ?: l.first()
+    }
 }

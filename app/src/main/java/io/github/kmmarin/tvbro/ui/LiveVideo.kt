@@ -42,6 +42,16 @@ object LivePlayer {
     var built = 0
 }
 
+/**
+ * The live player's own HTTP client (the app's connection pool and settings, its own dispatcher): a channel change
+ * cancels whatever it is loading without touching downloads or guide updates.
+ */
+object LiveHttp {
+    val client: okhttp3.OkHttpClient by lazy {
+        Net.client.newBuilder().dispatcher(okhttp3.Dispatcher()).apply { if (ZapTrace.on()) eventListener(ZapTrace.http) }.build()
+    }
+}
+
 /** Live connections open right now (the live player's data sources between open and close). */
 object LiveConns {
     @Volatile var open = 0
@@ -73,11 +83,17 @@ private class Counting(private val d: androidx.media3.datasource.DataSource) : a
  * connection was still open, two at once for a moment). Waits at most 3 s for a connection that does not close.
  */
 suspend fun liveLoad(exo: ExoPlayer, url: String) {
+    ZapTrace.start("live load (${LiveConns.open} open)")
     if (LiveConns.open > 0) {
+        // the old stream's request is cancelled here at once: through the player alone the connection closed ~110 ms
+        // later on the Fire TV (its loader thread was blocked reading), and the next channel waited for that
+        LiveHttp.client.dispatcher.cancelAll()
         exo.stop()
         kotlinx.coroutines.withTimeoutOrNull(3000) { while (LiveConns.open > 0) kotlinx.coroutines.delay(20) }
+        ZapTrace.log("old connection closed (${LiveConns.open} open)")
     }
     exo.setMediaItem(androidx.media3.common.MediaItem.fromUri(url)); exo.prepare(); exo.playWhenReady = true
+    ZapTrace.log("prepared")
 }
 
 /** The one live-TV player, shared by full screen and the TV preview (and by every activity instance). */
@@ -94,14 +110,19 @@ fun rememberLiveExo(m: AppModel): ExoPlayer {
                     androidx.media3.common.AudioAttributes.Builder().setUsage(androidx.media3.common.C.USAGE_MEDIA)
                         .setContentType(androidx.media3.common.C.AUDIO_CONTENT_TYPE_MOVIE).build(), true,
                 )
-                .setMediaSourceFactory(DefaultMediaSourceFactory(CountingFactory(OkHttpDataSource.Factory(Net.client))))
+                .setMediaSourceFactory(Captions.factory(CountingFactory(OkHttpDataSource.Factory(LiveHttp.client))))
                 .setLoadControl(
                     DefaultLoadControl.Builder()
                         .setBufferDurationsMs(ms.coerceAtLeast(2500), ms.coerceAtLeast(2500), 1200, 3000)
                         .setTargetBufferBytes(32 * 1024 * 1024)
                         .setPrioritizeTimeOverSizeThresholds(false)
                         .build(),
-                ).build().also { m.liveExo = it; LivePlayer.exo = it }
+                ).build().also {
+                    // the remembered caption choice (off by default)
+                    it.trackSelectionParameters = liveCaptionParams(it.trackSelectionParameters, m.store.liveCaptions)
+                    if (ZapTrace.on()) it.addAnalyticsListener(ZapTrace.player)
+                    m.liveExo = it; LivePlayer.exo = it
+                }
         }
     }
 }
@@ -133,7 +154,7 @@ fun LiveVideo(m: AppModel) {
         val o = androidx.lifecycle.LifecycleEventObserver { _, e ->
             when (e) {
                 androidx.lifecycle.Lifecycle.Event.ON_STOP -> m.foreground = false
-                androidx.lifecycle.Lifecycle.Event.ON_START -> if (!m.foreground) { m.foreground = true; m.liveGen++ }
+                androidx.lifecycle.Lifecycle.Event.ON_START -> if (!m.foreground) { ZapTrace.log("app in front"); m.foreground = true; m.liveGen++ }
                 else -> {}
             }
         }

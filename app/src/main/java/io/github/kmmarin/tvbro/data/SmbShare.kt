@@ -32,12 +32,12 @@ data class SmbConfig(val host: String = "", val share: String = "", val path: St
 object SmbShare {
     const val STORAGE_KEY = "smb"
 
-    private fun context(c: SmbConfig): CIFSContext {
+    private fun context(c: SmbConfig, connMs: Int = 8000, responseMs: Int = 20000): CIFSContext {
         val p = Properties().apply {
             setProperty("jcifs.smb.client.minVersion", "SMB202")
             setProperty("jcifs.smb.client.maxVersion", "SMB311")
-            setProperty("jcifs.smb.client.responseTimeout", "20000")
-            setProperty("jcifs.smb.client.connTimeout", "8000")
+            setProperty("jcifs.smb.client.responseTimeout", responseMs.toString())
+            setProperty("jcifs.smb.client.connTimeout", connMs.toString())
             setProperty("jcifs.resolveOrder", "DNS,BCAST")
         }
         val base = BaseContext(PropertyConfiguration(p))
@@ -47,33 +47,76 @@ object SmbShare {
     /** The share's free space in MB; throws when it cannot be reached. */
     fun freeMb(c: SmbConfig): Long = SmbFile(c.dirUrl, context(c)).use { d -> if (!d.exists()) d.mkdirs(); d.diskFreeSpace / (1024 * 1024) }
 
-    /** Writes, reads back and deletes a small file. Returns a short result for the UI (never the credentials). */
-    fun test(c: SmbConfig): String {
-        if (!c.ok) return "Fill in the server and share first"
+    /** Result of [check]: [text] is for the screen and never holds the credentials. */
+    data class Check(val ok: Boolean, val text: String, val freeBytes: Long = -1)
+
+    /**
+     * Connects with [c] (unsaved values are fine), creates the folder when missing, writes, reads back and deletes a
+     * small file. Short timeouts (about 4 s to reach the server, 8 s per answer): call it off the main thread.
+     */
+    fun check(c: SmbConfig, port: Int = 445): Check {
+        if (!c.ok) return Check(false, "Fill in the server and share first")
         return try {
-            val ctx = context(c)
-            SmbFile(c.dirUrl, ctx).use { d ->
+            // a plain TCP connect first: a wrong address or a server without file sharing fails fast and clearly
+            java.net.Socket().use { s -> s.connect(java.net.InetSocketAddress(c.host.trim(), port), 3500) }
+            SmbFile(c.dirUrl, context(c, 4000, 8000)).use { d ->
                 if (!d.exists()) d.mkdirs()
                 SmbFile(d, ".tvbro-test").use { f ->
                     f.openOutputStream().use { it.write("tvBro".toByteArray()) }
                     val back = f.openInputStream().use { it.readBytes().decodeToString() }
                     f.delete()
-                    if (back != "tvBro") return "Wrote a test file but could not read it back"
+                    if (back != "tvBro") return Check(false, "Connected, but a test file could not be read back")
                 }
-                "OK: ${c.label} is writable, ${d.diskFreeSpace / (1024 * 1024)} MB free"
+                val free = d.diskFreeSpace
+                Check(true, "Connected - ${size(free)} free", free)
             }
-        } catch (e: Exception) { "Failed: " + describe(e) }
+        } catch (e: Exception) { Check(false, "Could not connect: " + explain(e)) }
     }
 
+    /** Settings > Test storage: the same check as the setup screen's Test button. */
+    fun test(c: SmbConfig): String = check(c).let { if (it.ok) "OK: ${c.label} is writable, ${size(it.freeBytes)} free" else it.text }
+
+    /** 1288490188800 -> "1.2 TB" (binary units, like Windows). */
+    fun size(bytes: Long): String {
+        val u = listOf("bytes", "KB", "MB", "GB", "TB", "PB")
+        var v = bytes.toDouble(); var i = 0
+        while (v >= 1024 && i < u.size - 1) { v /= 1024; i++ }
+        return when { i == 0 -> "$bytes bytes"; v >= 100 -> String.format(java.util.Locale.US, "%.0f %s", v, u[i]); else -> String.format(java.util.Locale.US, "%.1f %s", v, u[i]) }
+    }
+
+    /** A short plain-language reason (the exception and its causes: jcifs wraps the network errors). */
     fun describe(e: Exception): String {
-        val m = (e.message ?: e.javaClass.simpleName)
-        return when {
-            m.contains("LOGON_FAILURE", true) || m.contains("Logon failure", true) -> "wrong user name or password"
-            m.contains("BAD_NETWORK_NAME", true) -> "share not found"
-            m.contains("ACCESS_DENIED", true) || m.contains("Access is denied", true) -> "access denied"
-            e is java.net.UnknownHostException || m.contains("unknown host", true) -> "server not found"
-            m.contains("timed out", true) || e is java.net.SocketTimeoutException -> "server did not answer"
-            else -> e.javaClass.simpleName
+        var t: Throwable? = e
+        var n = 0
+        while (t != null && n++ < 6) {
+            val m = t.message ?: ""
+            when {
+                m.contains("LOGON_FAILURE", true) || m.contains("Logon failure", true) -> return "wrong user name or password"
+                m.contains("BAD_NETWORK_NAME", true) -> return "share not found"
+                m.contains("ACCESS_DENIED", true) || m.contains("Access is denied", true) -> return "access denied"
+                m.contains("ACCOUNT_DISABLED", true) || m.contains("ACCOUNT_LOCKED", true) -> return "user account disabled or locked"
+                m.contains("PASSWORD_EXPIRED", true) -> return "password expired"
+                m.contains("OBJECT_PATH_NOT_FOUND", true) -> return "folder could not be created"
+                t is java.net.UnknownHostException || m.contains("unknown host", true) -> return "server not found"
+                t is java.net.ConnectException && m.contains("refused", true) -> return "connection refused"
+                t is java.net.NoRouteToHostException || m.contains("unreachable", true) -> return "server not reachable"
+                t is java.net.SocketTimeoutException || m.contains("timed out", true) || m.contains("timeout", true) -> return "server did not answer"
+            }
+            t = t.cause
+        }
+        return e.javaClass.simpleName
+    }
+
+    /** [describe] plus what to check, for the setup screen. */
+    fun explain(e: Exception): String = describe(e).let { r ->
+        r + when (r) {
+            "wrong user name or password" -> ". Check both (leave the user empty for guest access)."
+            "share not found" -> ". Check the share name (as shown under \\\\server)."
+            "access denied" -> ". This user may not write to that share or folder."
+            "server not found" -> ". Check the server name, or use its IP address."
+            "connection refused" -> ". Is file sharing (SMB) turned on at that address?"
+            "server not reachable", "server did not answer" -> ". Check the address and that the server is on."
+            else -> "."
         }
     }
 

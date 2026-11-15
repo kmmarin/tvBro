@@ -5,7 +5,8 @@
 | Folder | What |
 |---|---|
 | `shared/` | Platform-neutral Kotlin data layer: models, M3U / Xtream / XMLTV parsers, catch-up URLs, search index logic, watch state, guide window, focus rules. Used by `app/` and `desktop/`. |
-| `app/` | Android app (phones, Android TV, Google TV, Fire TV). Kotlin, Jetpack Compose, Media3 ExoPlayer. |
+| `app/` | Android app (phones, Android TV, Google TV, Fire TV). Kotlin, Jetpack Compose, Media3 ExoPlayer. Ships the Rust core (`core/`) for arm64-v8a / armeabi-v7a / x86_64: building it needs Rust (stable, `rustup target add aarch64-linux-android armv7-linux-androideabi x86_64-linux-android`) and NDK 27.3.13750724 in the Android SDK; Gradle runs cargo itself ([RUST_CORE.md](RUST_CORE.md)). |
+| `core/` | Rust core shared by every platform (parsers, URL guard, PIN / password hashing, search, guide store); UniFFI Kotlin bindings, PyO3 module. See [RUST_CORE.md](RUST_CORE.md). |
 | `desktop/` | Windows x64 and Linux arm64 app. Compose Multiplatform for Desktop, libmpv through JNA. |
 | `web/` | Self-hosted web app: Python server (`web/server`) and browser frontend (`web/frontend`). |
 | `docs/` | Install guide, architecture, feature parity matrix, third-party licenses, screenshots. |

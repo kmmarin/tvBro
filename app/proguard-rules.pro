@@ -21,3 +21,8 @@
     public static int d(...);
     public static int i(...);
 }
+# Rust core (UniFFI bindings): JNA finds the generated Structure / Callback classes and their fields by reflection
+-keep class com.sun.jna.** { *; }
+-keep class * implements com.sun.jna.** { *; }
+-keep class io.github.kmmarin.tvbro.core.** { *; }
+-dontwarn java.awt.**

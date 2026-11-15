@@ -16,6 +16,9 @@ Android app:
 - ZXing core (QR code encoder): Apache-2.0
 - jcifs-ng (SMB/CIFS client for recording to a network share): LGPL-2.1, used unmodified as a separate
   library; source https://github.com/AgNO3/jcifs-ng. With it: Bouncy Castle (MIT-style), SLF4J API (MIT)
+- JNA (Java Native Access): Apache-2.0 (dual-licensed Apache-2.0 / LGPL-2.1)
+- tvBro Rust core (libtvbro_ffi.so, built from core/): UniFFI (MPL-2.0, unmodified), SQLite (public domain)
+  and Rust crates under Apache-2.0 / MIT / BSD-3-Clause / Zlib / Unicode-3.0 (list: core/Cargo.lock)
 
 Desktop app (Windows x64, Linux arm64):
 - JetBrains Compose Multiplatform for Desktop, Skiko: Apache-2.0; Skia: BSD-3-Clause

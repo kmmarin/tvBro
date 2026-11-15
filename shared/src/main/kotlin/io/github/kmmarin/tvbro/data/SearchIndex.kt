@@ -19,7 +19,9 @@ interface SqlStmt { fun insert(vararg a: Any?): Long }
 object Fold {
     private val marks = Regex("\\p{M}+")
     fun text(s: String): String {
-        val n = Normalizer.normalize(s, Normalizer.Form.NFD).replace(marks, "").lowercase()
+        // (plain ASCII, most names: decomposition changes nothing, and it was most of a search's time on a Fire TV)
+        val ascii = s.all { it.code < 128 }
+        val n = if (ascii) s.lowercase() else Normalizer.normalize(s, Normalizer.Form.NFD).replace(marks, "").lowercase()
         val b = StringBuilder(n.length)
         var space = true
         for (c in n) {
@@ -37,8 +39,10 @@ object Fold {
     fun match(q: String): String? = tokens(q).takeIf { it.isNotEmpty() }?.joinToString(" ") { "$it*" }
 
     /** Lower is better: exact title, title starts with the query, every word starts a word in order, anything else. */
-    fun rank(name: String, q: String): Int {
-        val n = text(name); val f = text(q)
+    fun rank(name: String, q: String): Int = rankFolded(text(name), text(q))
+
+    /** [rank] of an already folded name and query. */
+    fun rankFolded(n: String, f: String): Int {
         if (n == f) return 0
         if (n.startsWith(f)) return 1
         val words = n.split(' '); val qt = f.split(' ')
@@ -138,8 +142,10 @@ object SearchIndex {
         return out
     }
 
-    private fun ranked(l: List<SearchHit>, q: String, limit: Int) =
-        l.map { it to Fold.rank(it.name, q) }.sortedWith(compareBy<Pair<SearchHit, Int>>({ it.second }, { it.first.name.length }, { it.first.name })).take(limit).map { it.first }
+    private fun ranked(l: List<SearchHit>, q: String, limit: Int): List<SearchHit> {
+        val f = Fold.text(q)
+        return l.map { it to Fold.rankFolded(Fold.text(it.name), f) }.sortedWith(compareBy<Pair<SearchHit, Int>>({ it.second }, { it.first.name.length }, { it.first.name })).take(limit).map { it.first }
+    }
 
     /**
      * Ranked results, at most [perSection] per section. Programmes are limited to those ending after [pastFrom]
@@ -154,7 +160,10 @@ object SearchIndex {
         val ser = ranked(candidates(db, SERIES, match, cand), q, perSection)
         val titles = ArrayList<Pair<Long, String>>()
         db.query("SELECT i.id,i.name FROM ${FTS[PROG]} f JOIN item i ON i.id=f.docid WHERE f.t MATCH ? ORDER BY length(i.name) LIMIT ${cand * 2}", arrayOf(match)) { titles += it.long(0) to (it.str(1) ?: "") }
-        val best = titles.sortedWith(compareBy({ Fold.rank(it.second, q) }, { it.second.length })).take(60)
+        // (ranks computed once per title: folding inside the comparator folded each title ~20 times)
+        val fq = Fold.text(q)
+        val best = titles.map { Triple(it, Fold.rankFolded(Fold.text(it.second), fq), it.second.length) }
+            .sortedWith(compareBy({ it.second }, { it.third })).take(60).map { it.first }
         val progs = ArrayList<ProgHit>()
         if (best.isNotEmpty()) {
             val name = best.toMap()

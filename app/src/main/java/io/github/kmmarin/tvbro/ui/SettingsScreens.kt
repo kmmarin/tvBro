@@ -25,8 +25,9 @@ import kotlinx.coroutines.launch
 import androidx.compose.foundation.focusGroup
 import io.github.kmmarin.tvbro.update.updateSection
 
+/** The app's one setting row (title left, value right), also Settings > About's update rows. */
 @Composable
-private fun SettingRow(title: String, value: String, onLeft: (() -> Unit)? = null, onRight: (() -> Unit)? = null, mod: Modifier = Modifier, onClick: () -> Unit) {
+fun SettingRow(title: String, value: String, onLeft: (() -> Unit)? = null, onRight: (() -> Unit)? = null, mod: Modifier = Modifier, onClick: () -> Unit) {
     Row(
         mod.fillMaxWidth().padding(vertical = 2.dp)
             .onPreviewKeyEvent { e ->
@@ -44,6 +45,14 @@ private fun SettingRow(title: String, value: String, onLeft: (() -> Unit)? = nul
         Text(value, color = Accent, fontSize = 18.sp)
     }
 }
+
+/**
+ * A value read off the main thread ([initial] until then): pages build as focus moves down the page names, and the
+ * guide database counts, encrypted settings and storage volumes cost tens to hundreds of ms each on the Fire TV.
+ */
+@Composable
+private fun <T> offMain(initial: T, vararg keys: Any?, read: () -> T): State<T> =
+    produceState(initial, *keys) { value = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { runCatching(read).getOrDefault(initial) } }
 
 private fun <T> cycle(opts: List<T>, cur: T, d: Int): T = opts[(opts.indexOf(cur).let { if (it < 0) 0 else it } + d).mod(opts.size)]
 
@@ -141,7 +150,7 @@ private fun LazyListScope.syncSection(m: AppModel) {
     for (s in m.sources.filter { it.enabled }) {
         item(key = "sh" + s.id) { Text(s.name + if (s.isXtream) "  (Xtream)" else "  (M3U)", color = TextMain, fontSize = 18.sp, modifier = Modifier.padding(top = 10.dp)) }
         item(key = "sc" + s.id) { SyncCard(m, s, io.github.kmmarin.tvbro.data.SyncKind.CHANNELS, m.store.chHours, "${m.channels.count { it.sourceId == s.id }} channels in ${m.channels.filter { it.sourceId == s.id }.map { it.group }.distinct().size} groups loaded") }
-        item(key = "sg" + s.id) { SyncCard(m, s, io.github.kmmarin.tvbro.data.SyncKind.GUIDE, m.epgHours, remember(io.github.kmmarin.tvbro.data.SyncStatus.recs["${s.id}|GUIDE"]) { m.guideStats(s) }) }
+        item(key = "sg" + s.id) { SyncCard(m, s, io.github.kmmarin.tvbro.data.SyncKind.GUIDE, m.epgHours, offMain("Stored guide: counting...", io.github.kmmarin.tvbro.data.SyncStatus.recs["${s.id}|GUIDE"]) { m.guideStats(s) }.value) }
         if (s.isXtream) item(key = "sv" + s.id) { SyncCard(m, s, io.github.kmmarin.tvbro.data.SyncKind.CATALOGUE, m.vodHours, null) }
         else note("This playlist type has no separate movie or series catalogue (playlist VOD entries are listed with the channels).")
     }
@@ -179,7 +188,7 @@ private fun LazyListScope.epgSection(m: AppModel) {
         SettingRow("Guide time shift", "%+d min  (left/right, OK +30)".format(m.epgShiftMin),
             { m.setShift(m.epgShiftMin - 30) }, { m.setShift(m.epgShiftMin + 30) }) { m.setShift(if (m.epgShiftMin >= 720) -720 else m.epgShiftMin + 30) }
     }
-    for (s in m.sources) item(key = "epg" + s.id) { SettingRow("Stored guide: ${s.name}", m.epgInfo(s)) { m.loadAll(true) } }
+    for (s in m.sources) item(key = "epg" + s.id) { SettingRow("Stored guide: ${s.name}", offMain("...", s.id, m.loading) { m.epgInfo(s) }.value) { m.loadAll(true) } }
     note("Guide window: the longest catch-up period of the source (at least 1 day) back, up to 7 days ahead.")
     item { SettingRow("Map channels to guide", "channels without guide data") { m.screen = Screen.MAPPING } }
     head("Reminders")
@@ -188,6 +197,11 @@ private fun LazyListScope.epgSection(m: AppModel) {
 
 private fun LazyListScope.appearance(m: AppModel) {
     head("Appearance")
+    item {
+        SettingRow("Scrolling", if (m.scrollCentred) "List moves (selection stays centred)" else "Selection moves",
+            { m.changeScrollCentred(!m.scrollCentred) }, { m.changeScrollCentred(!m.scrollCentred) }) { m.changeScrollCentred(!m.scrollCentred) }
+    }
+    item { SettingRow("Show channel numbers", if (m.showNumbers) "On" else "Off") { m.changeShowNumbers(!m.showNumbers) } }
     item { SettingRow("Channel numbers", if (m.numberMode == 0) "Provider numbers" else "Numbers per group (1, 2, 3...)") { m.changeNumberMode(1 - m.numberMode) } }
     item { SettingRow("Live preview in the TV screen", if (m.previewOn) "On" else "Off") { m.changePreviewOn(!m.previewOn) } }
     item { SettingRow("Preview sound", if (m.previewMuted) "Muted" else "On") { m.changePreviewMuted(!m.previewMuted) } }
@@ -247,10 +261,14 @@ private fun LazyListScope.parental(m: AppModel) {
 private fun LazyListScope.recording(m: AppModel) {
     head("Recording")
     item {
-        val label = remember(m.storageTick) { m.storageLabel() }
+        val label by offMain("...", m.storageTick) { m.storageLabel() }
         SettingRow("Recording storage", "$label  (OK: choose)") { m.pickStorage() }
     }
-    item { SettingRow("Network share (SMB)", m.store.smb().let { if (it.ok) it.label + (if (it.user.isNotBlank()) "  as ${it.user}" else "  (guest)") else "not set up" } + "  (OK: set up)") { m.setupSmb() } }
+    item {
+        // (encrypted storage: Keystore work)
+        val s = offMain<io.github.kmmarin.tvbro.data.SmbConfig?>(null, m.storageTick) { m.store.smb() }.value
+        SettingRow("Network share (SMB)", if (s == null) "..." else if (s.ok) s.label + (if (s.user.isNotBlank()) "  as ${s.user}" else "  (guest)") + "  (OK: edit)" else "not set up  (OK: add)") { m.setupSmb() }
+    }
     item { SettingRow("Test storage", m.storageTest.ifEmpty { "writes and deletes a small file, shows free space" }) { m.testStorage() } }
     note("Internal storage, a USB drive or SD card, or a network share (SMB/CIFS: Windows, NAS, Samba). A network share records to this device first and copies the file when the recording ends; if the share cannot be reached the recording stays on this device with a note. The share password is stored encrypted.")
     item {
@@ -277,10 +295,20 @@ private fun LazyListScope.other(m: AppModel) {
     item { SettingRow("Restore from backup", "") { m.restore() } }
 }
 
-private fun LazyListScope.about() {
+private object CoreTick { var v by androidx.compose.runtime.mutableIntStateOf(0) }
+
+/** Settings > About > Advanced: the developer rows are shown until turned off or the app ends (not saved). */
+object AdvancedUi { var shown by androidx.compose.runtime.mutableStateOf(false) }
+
+private fun LazyListScope.about(m: AppModel) {
     head("About")
     note("tvBro ${io.github.kmmarin.tvbro.BuildConfig.VERSION_NAME} - open source, Apache-2.0. A player only: it ships no channels or content.")
     updateSection()
+    if (io.github.kmmarin.tvbro.BuildConfig.DEBUG) {
+        note("Core: " + io.github.kmmarin.tvbro.data.CoreSwitch.status())
+        item(key = "advanced") { SettingRow("Advanced", if (AdvancedUi.shown) "shown below  (OK: hide)" else "developer settings  (OK: show)") { AdvancedUi.shown = !AdvancedUi.shown } }
+        if (AdvancedUi.shown) developer(m)
+    }
     item {
         var tick by remember { mutableIntStateOf(0) }
         SettingRow("Diagnostics (OK to refresh)", "last load counts and errors") { tick++ }
@@ -289,21 +317,61 @@ private fun LazyListScope.about() {
     }
 }
 
+/**
+ * Debug builds only: the Rust core rollout switch per row (docs/RUST_CORE.md), applied at the next start. OK cycles
+ * Kotlin, Rust and, for the parsing rows, Shadow (Kotlin in charge, the core compared afterwards; summary in
+ * files/core-shadow.log).
+ */
+private fun LazyListScope.developer(m: AppModel) {
+    head("Developer: Rust core")
+    note("Changes apply when the app restarts.")
+    // "Restart now" while a switch differs from what runs (bumped on every change)
+    item(key = "core-restart") {
+        val ctx = androidx.compose.ui.platform.LocalContext.current
+        val sw = io.github.kmmarin.tvbro.data.CoreSwitch
+        @Suppress("UNUSED_VARIABLE") val tick = CoreTick.v
+        val differ = io.github.kmmarin.tvbro.data.CoreSwitch.Row.entries.any { r -> sw.stored(ctx, r)?.let { it != sw.mode(r) } == true }
+        if (differ) SettingRow("Restart now to apply", "restarts tvBro now (about two seconds)") {
+            if (io.github.kmmarin.tvbro.data.RecRepo.items.any { it.status == "recording" }) m.toast("A recording is running: restart after it ends")
+            else io.github.kmmarin.tvbro.RestartActivity.restart(ctx) { m.saveForRestart() }
+        }
+    }
+    for (r in io.github.kmmarin.tvbro.data.CoreSwitch.Row.entries) item(key = "core-" + r.id) {
+        val ctx = androidx.compose.ui.platform.LocalContext.current
+        val sw = io.github.kmmarin.tvbro.data.CoreSwitch
+        var mode by remember { mutableStateOf(sw.stored(ctx, r) ?: sw.mode(r)) }
+        val now = when { sw.core(r) -> "Rust"; sw.shadow(r) -> "Shadow"; else -> "Kotlin" }
+        SettingRow(r.label, mode.label + " at next start (now $now)") {
+            val order = io.github.kmmarin.tvbro.data.CoreSwitch.Mode.entries.filter { it != io.github.kmmarin.tvbro.data.CoreSwitch.Mode.SHADOW || r.canShadow }
+            mode = order[(order.indexOf(mode) + 1) % order.size]; sw.store(ctx, r, mode); CoreTick.v++
+        }
+    }
+    item(key = "core-shadow-log") {
+        val ctx = androidx.compose.ui.platform.LocalContext.current
+        val lines = remember { java.io.File(ctx.filesDir, io.github.kmmarin.tvbro.data.CoreShadow.LOG).takeIf { it.exists() }?.readLines()?.takeLast(6) ?: emptyList() }
+        SettingRow("Shadow comparisons", if (lines.isEmpty()) "none yet" else lines.joinToString("\n")) { }
+    }
+}
+
 /** Settings as a panel sliding in from the right over the current screen. */
 @Composable
 fun SettingsScreen(m: AppModel) {
     // Back returns where Settings was opened from (full-screen live TV or the home screen)
     BackHandler { m.screen = m.settingsBack; m.settingsBack = Screen.LIST }
+    // the home screen stays composed under the panel: closing it puts focus back where Settings was opened from
+    RestoreFocusOnClose(Unit) { m.layerOpen() }
     var shown by remember { mutableStateOf(false) }
     LaunchedEffect(Unit) { shown = true }
-    val x by androidx.compose.animation.core.animateDpAsState(if (shown) 0.dp else 820.dp, label = "panel")
+    // (read at layout time: the slide moves the panel without recomposing both of its lists every frame)
+    // (a short slide: the spring took ~0.6 s to settle on the Fire TV, longer than TiviMate's panel)
+    val x = androidx.compose.animation.core.animateDpAsState(if (shown) 0.dp else 820.dp, androidx.compose.animation.core.tween(220), label = "panel")
     val names = listOf("General", "Playlists", "Sync", "EPG", "Appearance", "Playback", "Remote control", "Parental controls", "Recording", "Channels and groups", "About")
     var sec by m::settingsSec // remembered (also across restarts): Settings reopens on the same page
     val firstSec = remember { sec.coerceIn(0, names.size - 1) }
     val fr = remember { androidx.compose.ui.focus.FocusRequester() }
-    LaunchedEffect(Unit) { kotlinx.coroutines.delay(300); runCatching { fr.requestFocus() } }
+    LaunchedEffect(Unit) { kotlinx.coroutines.delay(60); runCatching { fr.requestFocus() } } // (was 300 ms: the slow slide)
     Box(Modifier.fillMaxSize().background(androidx.compose.ui.graphics.Color(0x99000000))) {
-        Row(Modifier.align(Alignment.CenterEnd).offset(x = x).width(820.dp).fillMaxHeight().focusTrap().background(androidx.compose.ui.graphics.Color(0xFF141A22))) {
+        Row(Modifier.align(Alignment.CenterEnd).offset { androidx.compose.ui.unit.IntOffset(x.value.roundToPx(), 0) }.width(820.dp).fillMaxHeight().focusTrap().background(androidx.compose.ui.graphics.Color(0xFF141A22))) {
             // Left from a setting goes back to its page's name, not to whichever name is level with it (that would
             // switch pages)
             val selFr = remember { SafeFocus() }
@@ -312,28 +380,44 @@ fun SettingsScreen(m: AppModel) {
             val pageFr = remember { androidx.compose.ui.focus.FocusRequester() }
             val pageState = androidx.compose.foundation.lazy.rememberLazyListState()
             val pageScope = rememberCoroutineScope()
-            LaunchedEffect(sec) { runCatching { pageState.scrollToItem(0) } }
+            // The page shown follows the focused name once focus rests on it a moment: building a page took 60-80 ms on
+            // the Fire TV, so moving down the names built every page on the way. Right enters the name's page at once.
+            var page by remember { mutableIntStateOf(sec.coerceIn(0, names.size - 1)) }
+            LaunchedEffect(sec) { if (page != sec) { kotlinx.coroutines.delay(150); page = sec; runCatching { pageState.scrollToItem(0) } } }
             LazyColumn(Modifier.width(230.dp).fillMaxHeight().padding(12.dp).enterAt(selFr)) {
-                item { Text("Settings", color = Accent, fontSize = 24.sp, modifier = Modifier.padding(10.dp)) }
+                item { SectionTitle("Settings", Modifier.padding(10.dp)) }
                 itemsIndexed(names) { i, n ->
                     Text((if (i == sec) "> " else "  ") + n, color = if (i == sec) Accent else TextMain, fontSize = 16.sp, maxLines = 1,
                         modifier = Modifier.fillMaxWidth().then(if (i == firstSec) Modifier.focusRequester(fr) else Modifier).safeFocus(if (i == sec) selFr else null)
                             .onFocusChanged { if (it.isFocused) sec = i }
                             .onPreviewKeyEvent { e ->
                                 if (e.type == KeyEventType.KeyDown && e.key == Key.DirectionRight) {
-                                    pageScope.launch { runCatching { pageState.scrollToItem(0) }; runCatching { pageFr.requestFocus() } }
+                                    pageScope.launch {
+                                        if (page != i) { page = i; androidx.compose.runtime.withFrameNanos { } } // (composed first)
+                                        runCatching { pageState.scrollToItem(0) }; runCatching { pageFr.requestFocus() }
+                                    }
                                     true
                                 } else false
                             }
                             .tvFocus { sec = i }.padding(10.dp))
                 }
             }
-            LazyColumn(Modifier.weight(1f).fillMaxHeight().padding(16.dp).focusRequester(pageFr).focusGroup(), state = pageState) {
-                when (sec) {
-                    0 -> general(m); 1 -> playlists(m); 2 -> syncSection(m); 3 -> epgSection(m); 4 -> appearance(m); 5 -> playback(m)
-                    6 -> remote(); 7 -> parental(m); 8 -> recording(m); 9 -> other(m); else -> about()
-                }
-            }
+            // the page comes one frame after the panel: the panel starts sliding in at once (the first frame waited for
+            // the remembered page to be built, up to a second on the Fire TV for the longer pages)
+            var pageReady by remember { mutableStateOf(false) }
+            LaunchedEffect(Unit) { androidx.compose.runtime.withFrameNanos { }; pageReady = true }
+            if (pageReady) SettingsPage(m, page, pageState, pageFr, Modifier.weight(1f)) else Spacer(Modifier.weight(1f))
+        }
+    }
+}
+
+/** One page of Settings (its own scope: moving along the page names does not rebuild it). */
+@Composable
+private fun SettingsPage(m: AppModel, page: Int, state: androidx.compose.foundation.lazy.LazyListState, fr: androidx.compose.ui.focus.FocusRequester, modifier: Modifier) {
+    LazyColumn(modifier.fillMaxHeight().padding(16.dp).focusRequester(fr).focusGroup(), state = state) {
+        when (page) {
+            0 -> general(m); 1 -> playlists(m); 2 -> syncSection(m); 3 -> epgSection(m); 4 -> appearance(m); 5 -> playback(m)
+            6 -> remote(); 7 -> parental(m); 8 -> recording(m); 9 -> other(m); else -> about(m)
         }
     }
 }
@@ -376,7 +460,7 @@ fun AddSourceScreen(m: AppModel) {
     val ok = if (xtream) server.isNotBlank() && user.isNotBlank() && pass.isNotBlank() else url.isNotBlank()
     Row(Modifier.fillMaxSize().background(Bg).padding(32.dp)) {
     LazyColumn(Modifier.weight(1f).fillMaxHeight(), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-        item(key = "title") { Text("Add source", color = Accent, fontSize = 28.sp) }
+        item(key = "title") { SectionTitle("Add source") }
         if (ls == null) item(key = "phone") { TvButton("Use your phone (scan a QR code, type on the phone)") { m.startLink(null) } }
         item(key = "type") { SettingRow("Type", if (xtream) "Xtream login (server, username, password)" else "M3U URL", mod = Modifier.focusRequester(typeFr)) { xtream = !xtream } }
         item(key = "name") { TvField("Name (optional)", name, { name = it }) }
@@ -439,7 +523,7 @@ private fun LinkPanel(m: AppModel, ls: AppModel.LinkState) {
         QrCode(ls.url + "?c=" + ls.code, Modifier.size(300.dp))
         Spacer(Modifier.width(40.dp))
         Column {
-            Text(if (ls.edit != null) "Edit ${ls.edit.name} on your phone" else "Add a source with your phone", color = Accent, fontSize = 28.sp)
+            SectionTitle(if (ls.edit != null) "Edit ${ls.edit.name} on your phone" else "Add a source with your phone")
             Text("1. Join the same Wi-Fi network as this TV.", color = TextMain, fontSize = 18.sp, modifier = Modifier.padding(top = 16.dp))
             Text("2. Scan the code, or open:", color = TextMain, fontSize = 18.sp)
             Text(ls.url, color = Accent, fontSize = 24.sp, modifier = Modifier.padding(vertical = 6.dp))

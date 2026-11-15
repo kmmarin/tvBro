@@ -9,6 +9,9 @@ import androidx.security.crypto.MasterKey
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 
+/** Title snapshots parsed from the "vod" prefs, shared by every [Store] of the process (see Store.loadSnap). */
+@Volatile private var snapShared: Map<String, VodItem>? = null
+
 /** Settings in plain prefs; sources (which hold credentials) in EncryptedSharedPreferences. */
 class Store(private val ctx: Context) {
     private val sp = ctx.getSharedPreferences("settings", Context.MODE_PRIVATE)
@@ -89,6 +92,10 @@ class Store(private val ctx: Context) {
         get() = sp.getString("lastKey", null)
         set(v) = sp.edit { putString("lastKey", v) }
 
+    /** Live channels watched lately, newest first (see [ChannelHistory]). */
+    fun recentChannels(): List<String> = ChannelHistory.decode(sp.getString("recentCh", null) ?: sp.getString("recentLive", null)) // (recentLive: the list of the 2026-11-14 builds)
+    fun saveRecentChannels(l: List<String>) = sp.edit { putString("recentCh", ChannelHistory.encode(l)) }
+
     fun favourites(): Set<String> = HashSet(sp.getStringSet("favs", emptySet()) ?: emptySet())
     fun saveFavourites(s: Set<String>) = sp.edit { putStringSet("favs", HashSet(s)) }
 
@@ -163,8 +170,21 @@ class Store(private val ctx: Context) {
     fun setLastRefresh(id: String, t: Long) = sp.edit { putLong("lr_$id", t) }
 
     private val snapJson = Json { ignoreUnknownKeys = true }
-    private fun loadSnap(): MutableMap<String, VodItem> =
-        try { snapJson.decodeFromString<Map<String, VodItem>>(vp.getString("snaps", "{}") ?: "{}").toMutableMap() } catch (e: Exception) { mutableMapOf() }
+    // Parsed once and kept (My list, History and Continue watching read it on the main thread on every visit: the
+    // JSON of up to 300 titles took tens of ms on the Fire TV each time). Writes replace it. One per process (several
+    // Store objects exist: the storage migration strips addresses through its own).
+    private var snapCache: Map<String, VodItem>?
+        get() = snapShared
+        set(v) { snapShared = v }
+    private fun loadSnap(): MutableMap<String, VodItem> = HashMap(snapCache ?: synchronized(Store::class.java) {
+        snapCache ?: (try { snapJson.decodeFromString<Map<String, VodItem>>(vp.getString("snaps", "{}") ?: "{}") } catch (e: Exception) { emptyMap() }).also { snapCache = it }
+    })
+    /** Reads the snapshots into memory (off the main thread at start). */
+    fun warmSnaps() { loadSnap() }
+    private fun saveSnap(m: Map<String, VodItem>, commit: Boolean = false) {
+        snapCache = HashMap(m)
+        vp.edit(commit = commit) { putString("snaps", snapJson.encodeToString(m)) }
+    }
     /**
      * Snapshots of titles for My list / Continue watching (plain prefs). They never keep the stream address: a
      * playlist (M3U) title's address carries the login and is looked up in the decrypted playlist at play time.
@@ -172,13 +192,16 @@ class Store(private val ctx: Context) {
     fun snap(item: VodItem) {
         val m = loadSnap(); m[item.key] = item.copy(url = null)
         if (m.size > 300) { val keep = (recent() + favourites() + watch.allSeries().filter { it.active }.map { it.key }).toSet(); m.keys.retainAll { it in keep || it == item.key } }
-        vp.edit { putString("snaps", snapJson.encodeToString(m)) }
+        saveSnap(m)
     }
-    fun snaps(keys: List<String>): List<VodItem> { val m = loadSnap(); return keys.mapNotNull { m[it] } }
+    fun snaps(keys: List<String>): List<VodItem> {
+        val m = snapCache ?: loadSnap()
+        return keys.mapNotNull { m[it] }
+    }
     /** One-time migration: snapshots written by older versions lose their stream addresses. */
     fun stripSnapUrls() {
         val m = loadSnap()
-        if (m.values.any { it.url != null }) vp.edit(commit = true) { putString("snaps", snapJson.encodeToString(m.mapValues { it.value.copy(url = null) })) }
+        if (m.values.any { it.url != null }) saveSnap(m.mapValues { it.value.copy(url = null) }, commit = true)
     }
     var previewOn: Boolean
         get() = sp.getBoolean("previewOn", true)
@@ -206,6 +229,27 @@ class Store(private val ctx: Context) {
     var numberMode: Int
         get() = sp.getInt("numberMode", 0)
         set(v) = sp.edit { putInt("numberMode", v) }
+    /** Channel numbers before the names (TV screen, player banner): off unless the user turns them on. */
+    var showNumbers: Boolean
+        get() = sp.getBoolean("showNumbers", false)
+        set(v) = sp.edit { putBoolean("showNumbers", v) }
+    /** Lists keep the focused item centred and move under it (default), else the selection moves (FocusScroll). */
+    var scrollCentred: Boolean
+        get() = sp.getBoolean("scrollCentred", true)
+        set(v) = sp.edit { putBoolean("scrollCentred", v) }
+    /** Movies / Shows: the category last shown and the grid's scroll (first item, offset), restored on the next open. */
+    fun vodCat(series: Boolean): String? = sp.getString(if (series) "vodCatS" else "vodCatM", null)
+    fun setVodCat(series: Boolean, v: String) = sp.edit { putString(if (series) "vodCatS" else "vodCatM", v) }
+    fun vodScroll(series: Boolean): Pair<Int, Int> = (sp.getString(if (series) "vodScrollS" else "vodScrollM", null) ?: "").split(',').let { p ->
+        (p.getOrNull(0)?.toIntOrNull() ?: 0) to (p.getOrNull(1)?.toIntOrNull() ?: 0)
+    }
+    fun setVodScroll(series: Boolean, v: Pair<Int, Int>) = sp.edit { putString(if (series) "vodScrollS" else "vodScrollM", "${v.first},${v.second}") }
+
+    /** Live TV captions: the language chosen last ("" = off), applied to every channel. */
+    var liveCaptions: String
+        get() = sp.getString("liveCaptions", "") ?: ""
+        set(v) = sp.edit { putString("liveCaptions", v) }
+
     var lastGroup: String?
         get() = sp.getString("lastGroup", null)
         set(v) = sp.edit { putString("lastGroup", v) }

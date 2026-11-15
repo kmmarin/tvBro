@@ -62,22 +62,21 @@ fun SearchScreen(m: AppModel, onBack: () -> Unit) {
     val ver = SearchStore.version.intValue
     LaunchedEffect(ver) { if (ver > 0) m.refreshSearch() }
     val fieldFr = remember { SafeFocus() }
-    LaunchedEffect(Unit) { delay(150); fieldFr.request() }
+    // opened by the user: straight into typing, keyboard up (one press less, as in TiviMate); restored at start or
+    // come back to with results: the field only takes focus
+    val typeNow = remember { m.searchKeyboard.also { m.searchKeyboard = false } }
+    LaunchedEffect(Unit) { m.warmSearch(); if (!typeNow) { delay(150); fieldFr.request() } }
     val v = m.searchView
     val now = rememberNow()
 
     Column(Modifier.fillMaxSize().background(Bg).padding(horizontal = 24.dp, vertical = 16.dp)) {
         // Up from the history / results enters this row at the search field (it went to the mic button, the nearest)
         Row(Modifier.enterAt(fieldFr), verticalAlignment = Alignment.CenterVertically) {
-            Box(Modifier.size(64.dp).tvFocus(CircleShape) { speak() }.background(Surface, CircleShape), contentAlignment = Alignment.Center) {
-                Image(painterResource(R.drawable.ic_mic), "Voice search", Modifier.size(30.dp), colorFilter = ColorFilter.tint(Accent))
-            }
+            RoundIconButton(R.drawable.ic_mic, "Voice search", tint = Accent) { speak() }
             Spacer(Modifier.width(16.dp))
-            SearchField(m, Modifier.weight(1f), fieldFr)
+            SearchField(m, Modifier.weight(1f), fieldFr, typeNow)
             Spacer(Modifier.width(16.dp))
-            Box(Modifier.size(52.dp).tvFocus(CircleShape) { m.screen = Screen.SETTINGS }, contentAlignment = Alignment.Center) {
-                Image(painterResource(R.drawable.ic_nav_settings), "Settings", Modifier.size(26.dp), colorFilter = ColorFilter.tint(TextMain))
-            }
+            RoundIconButton(R.drawable.ic_nav_settings, "Settings") { m.screen = Screen.SETTINGS }
         }
         if (m.searchQ.isBlank()) History(m)
         else if (v == null) Text(if (SearchStore.building) "Searching (the search index is being built)..." else "Searching...", color = TextDim, modifier = Modifier.padding(16.dp))
@@ -86,8 +85,8 @@ fun SearchScreen(m: AppModel, onBack: () -> Unit) {
 }
 
 @Composable
-private fun SearchField(m: AppModel, modifier: Modifier, boxFr: SafeFocus) {
-    var editing by remember { mutableStateOf(false) }
+private fun SearchField(m: AppModel, modifier: Modifier, boxFr: SafeFocus, typeNow: Boolean) {
+    var editing by remember { mutableStateOf(typeNow) }
     val fr = remember { FocusRequester() }
     val kb = androidx.compose.ui.platform.LocalSoftwareKeyboardController.current
     val shape = RoundedCornerShape(30.dp)
@@ -101,7 +100,7 @@ private fun SearchField(m: AppModel, modifier: Modifier, boxFr: SafeFocus) {
     }
     val stop = { editing = false; kb?.hide(); m.rememberSearch() }
     if (!editing) {
-        Box(modifier.height(56.dp).safeFocus(boxFr).tvFocus(shape) { editing = true }.border(1.dp, TextDim.copy(alpha = 0.4f), shape).padding(horizontal = 22.dp), contentAlignment = Alignment.CenterStart) {
+        Box(modifier.height(56.dp).safeFocus(boxFr).tvFocus(shape, rest = Surface, outline = true) { editing = true }.padding(horizontal = 22.dp), contentAlignment = Alignment.CenterStart) {
             Text(m.searchQ.ifEmpty { "Search channels, programmes, movies and shows" }, color = if (m.searchQ.isEmpty()) TextDim else TextMain, fontSize = 19.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
         }
     } else {
@@ -115,7 +114,7 @@ private fun SearchField(m: AppModel, modifier: Modifier, boxFr: SafeFocus) {
             // Down while typing: done, on to the results (the field is no trap)
             modifier = modifier.height(56.dp).focusRequester(fr).countFocus().onFocusChanged { val w = f; f = it.isFocused; if (w && !f && editing) { lost = true; stop() } }
                 .onPreviewKeyEvent { e -> if (e.type == androidx.compose.ui.input.key.KeyEventType.KeyDown && e.key == androidx.compose.ui.input.key.Key.DirectionDown) { stop(); true } else false }
-                .background(if (f) FocusBg else Surface, shape).border(3.dp, Accent, shape).padding(horizontal = 22.dp, vertical = 16.dp),
+                .fieldLook(f, shape).padding(horizontal = 22.dp, vertical = 16.dp),
         )
     }
 }
@@ -166,7 +165,7 @@ private fun Results(m: AppModel, v: AppModel.SearchView, now: Long) {
         }
         if (v.channels.isNotEmpty()) item {
             SectionTitle("Channels", v.channels.size)
-            LazyRow { items(v.channels) { c -> ChannelTile(m, c, now, onFocus = { m.rememberSearch() }) } }
+            LazyRow { items(v.channels) { c -> ChannelTile(m, c, now, onFocus = { m.rememberSearch() }, compact = true) } }
         }
         if (v.progs.isNotEmpty()) item {
             SectionTitle("Programs", v.progs.sumOf { it.second.size })
@@ -248,21 +247,13 @@ private fun ProgDetails(m: AppModel, c: Channel, r: AppModel.ProgRow?, now: Long
     }
 }
 
-/** "<title> is starting now on <channel>" with Watch now / Dismiss, while tvBro is open. */
+/** "<title> is starting now on <channel>" with Watch now / Dismiss while tvBro is open: the app's pop-up as a card. */
 @Composable
 fun ReminderPopup(m: AppModel) {
     val r = m.dueReminder ?: return
-    BackHandler { m.reminderDismiss(r) }
-    val fr = remember { FocusRequester() }
-    LaunchedEffect(r.id) { delay(100); runCatching { fr.requestFocus() } }
-    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.TopEnd) {
-        Column(Modifier.padding(28.dp).width(440.dp).clip(RoundedCornerShape(12.dp)).background(Surface).border(2.dp, Accent, RoundedCornerShape(12.dp)).padding(20.dp)) {
-            Text("Reminder", color = Accent, fontSize = 14.sp)
-            Text("${r.title} is starting now on ${r.channel}", color = TextMain, fontSize = 19.sp, maxLines = 3, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(vertical = 8.dp))
-            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                TvButton("Watch now", Modifier.focusRequester(fr)) { m.reminderWatch(r) }
-                TvButton("Dismiss") { m.reminderDismiss(r) }
-            }
-        }
+    val fr = remember(r.id) { FocusRequester() }
+    Popup(r.id, "Reminder", { m.reminderDismiss(r) }, m, width = 440.dp, align = Alignment.TopEnd, dim = false, focus = fr) {
+        Text("${r.title} is starting now on ${r.channel}", color = TextMain, fontSize = 19.sp, maxLines = 3, overflow = TextOverflow.Ellipsis)
+        PopupButtons(fr, "Watch now" to { m.reminderWatch(r) }, "Dismiss" to { m.reminderDismiss(r) })
     }
 }

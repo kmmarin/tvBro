@@ -14,6 +14,7 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.async
 import kotlinx.coroutines.flow.collectLatest
 import io.github.kmmarin.tvbro.data.*
 import kotlinx.serialization.json.put
@@ -23,14 +24,18 @@ import java.util.UUID
 
 enum class Section { SEARCH, TV, MOVIES, SHOWS, RECORDINGS, MYLIST }
 
-enum class Screen { LIST, PLAYER, GUIDE, SETTINGS, ADD_SOURCE, GUIDE_SEARCH, MAPPING, VOD, DETAIL, VODPLAY, RECORDINGS, EDITOR }
+enum class Screen { LIST, PLAYER, GUIDE, SETTINGS, ADD_SOURCE, GUIDE_SEARCH, MAPPING, VOD, DETAIL, VODPLAY, RECORDINGS, EDITOR, SMB_SETUP }
 
-data class CatchupPlay(val url: String, val title: String)
+/** A past programme playing from the archive; [lenMs]: its length (the stream itself may run on for hours). */
+data class CatchupPlay(val url: String, val title: String, val lenMs: Long = 0)
 data class VodPlay(val key: String, val url: String, val title: String)
 
 // Built-in Movies / Shows categories: keys no provider category can have (a provider "History" category collided
 // with the watch history: both showed as selected and choosing it showed the history); vodCatLabel() names them.
 const val CAT_RECENT = "\u0001History"
+/** Search: matches per result row shown, and fetched from the index to pick them in name order. */
+const val SEARCH_ROW = 30
+const val SEARCH_FETCH = 150
 const val CAT_MYLIST = "\u0001My list"
 const val VOD_ALL = "\u0001All titles"
 
@@ -39,6 +44,13 @@ fun vodCatLabel(g: String, shows: Boolean): String = when (g) {
 }
 const val M3U_CAT = "Playlist VOD"
 const val VOD_PAGE = 240
+
+/** The TV screen's rows for group [g] (from [shown]: visible channels in display order). */
+fun groupRows(shown: List<Channel>, g: String, prefs: Prefs, favourites: Set<String>): List<Channel> = when (g) {
+    GROUP_ALL -> shown
+    GROUP_FAV -> shown.filter { it.key in favourites }
+    else -> if (g in prefs.custom) (prefs.custom[g] ?: emptyList()).toHashSet().let { ks -> shown.filter { it.key in ks } } else shown.filter { it.group == g }
+}
 
 const val GROUP_ALL = "All channels"
 const val GROUP_FAV = "Favourites"
@@ -58,7 +70,13 @@ class AppModel(private val app: Application) : AndroidViewModel(app) {
     var favourites by mutableStateOf(store.favourites())
     var current by mutableStateOf<Channel?>(null)
     var catchup by mutableStateOf<CatchupPlay?>(null)
-    var group by mutableStateOf(GROUP_ALL)
+    private val groupState = mutableStateOf(GROUP_ALL)
+    var group: String
+        get() = groupState.value
+        set(v) {
+            if (BuildConfig.DEBUG && v != groupState.value) android.util.Log.i("tvbro-dbg", "group -> $v from " + Throwable().stackTrace.drop(1).take(5).joinToString(" < ") { "${it.className.substringAfterLast('.')}.${it.methodName}:${it.lineNumber}" })
+            groupState.value = v
+        }
     var query by mutableStateOf("")
 
     var epgHours by mutableIntStateOf(store.epgHours); private set
@@ -76,6 +94,12 @@ class AppModel(private val app: Application) : AndroidViewModel(app) {
     private var groupInit = false
     var numberMode by mutableIntStateOf(store.numberMode); private set
     fun changeNumberMode(v: Int) { numberMode = v; store.numberMode = v }
+    /** Settings > Appearance > Show channel numbers (TV screen rows, player banner); off by default. */
+    var showNumbers by mutableStateOf(store.showNumbers); private set
+    fun changeShowNumbers(b: Boolean) { showNumbers = b; store.showNumbers = b }
+    /** Settings > Appearance > Scrolling: the list moves under a centred selection (default), or the selection moves. */
+    var scrollCentred by mutableStateOf(store.scrollCentred.also { io.github.kmmarin.tvbro.ui.FocusScroll.centred = it }); private set
+    fun changeScrollCentred(b: Boolean) { scrollCentred = b; store.scrollCentred = b; io.github.kmmarin.tvbro.ui.FocusScroll.centred = b }
     var aspectMode by mutableIntStateOf(0)
     val delayProc = io.github.kmmarin.tvbro.ui.AudioDelayProcessor()
     var audioDelayMs by mutableIntStateOf(0)
@@ -128,12 +152,16 @@ class AppModel(private val app: Application) : AndroidViewModel(app) {
         val l = channels.filter { it.key !in p.hiddenCh && it.group !in p.hiddenGroups && (it.group !in p.locked || it.group in unlocked) }
             .map { c -> p.names[c.key]?.let { c.copy(name = it) } ?: c }
         // PPV channels last by default (stable: the provider's order otherwise); the user's own order wins
-        if (pos.isEmpty()) l.sortedBy { GroupOrder.isPpv(it.group) }
-        else l.sortedBy { pos[it.key] ?: if (GroupOrder.isPpv(it.group)) Int.MAX_VALUE else Int.MAX_VALUE - 1 }
+        // (PPV once per group: a regex in every comparison of 15 800 channels held the main thread ~1 s at start)
+        val ppv = HashMap<String, Boolean>()
+        val isPpv = { c: Channel -> ppv.getOrPut(c.group) { GroupOrder.isPpv(c.group) } }
+        if (pos.isEmpty()) l.sortedBy { isPpv(it) }
+        else l.sortedBy { pos[it.key] ?: if (isPpv(it)) Int.MAX_VALUE else Int.MAX_VALUE - 1 }
     }
 
     /** Favourites and All channels always first; then custom groups, then provider groups (PPV last by default). */
     val groupList: List<String> by derivedStateOf {
+        snapGroups?.let { return@derivedStateOf it } // the start snapshot (see applySnapshot)
         val p = prefs
         val g = channels.filter { it.group !in p.hiddenGroups }.map { it.group }.distinct()
         listOf(GROUP_FAV, GROUP_ALL) + p.custom.keys.toList() + GroupOrder.order(g, p.groupOrder)
@@ -143,11 +171,7 @@ class AppModel(private val app: Application) : AndroidViewModel(app) {
 
     val filtered: List<Channel> by derivedStateOf {
         val q = query.trim().lowercase()
-        shown.filter {
-            (when (group) { GROUP_ALL -> true; GROUP_FAV -> it.key in favourites
-                else -> if (group in prefs.custom) it.key in (prefs.custom[group] ?: emptyList()) else it.group == group }) &&
-                (q.isEmpty() || it.name.lowercase().contains(q))
-        }.let { l -> if (numberMode == 1) l.mapIndexed { i, c -> c.copy(number = i + 1) } else l }
+        groupRows(shown, group, prefs, favourites).let { l -> if (q.isEmpty()) l else l.filter { it.name.lowercase().contains(q) } }.let { l -> if (numberMode == 1 && !snapActive) l.mapIndexed { i, c -> c.copy(number = i + 1) } else l }
     }
 
     init {
@@ -178,8 +202,10 @@ class AppModel(private val app: Application) : AndroidViewModel(app) {
         val multi = srcs.size > 1
         viewModelScope.launch(Dispatchers.IO) {
             Refresh.fgBusy = true
+            // the guide database opens while the channel list is read (the rows of the start snapshot load from it)
+            val dbOpen = if (epg !is DbEpg) launch { try { rebuildIndex() } catch (e: Exception) { Diag.log("guide db open failed (${e.javaClass.simpleName})") } } else null
             try {
-            loading = "Loading channels..."
+            if (channels.isEmpty() && !snapActive) loading = "Loading channels..." // (quiet while the start snapshot shows)
             message = ""
             val all = ArrayList<Channel>()
             val t0 = System.currentTimeMillis()
@@ -191,12 +217,14 @@ class AppModel(private val app: Application) : AndroidViewModel(app) {
             all.clear(); all.addAll(liveC)
             if (force) for (s in srcs) store.setLastRefresh(s.id, System.currentTimeMillis())
             val em = store.epgMap()
+            realLoaded = true
             channels = all.mapIndexed { i, c -> (if (c.number > 0) c else c.copy(number = i + 1)).let { x -> em[x.key]?.let { id -> x.copy(tvgId = id, idKey = "${x.sourceId}|${id.lowercase()}") } ?: x } }
             // on the main thread: groupList / filtered are derived states, and reading them here (IO) while the UI
             // composes crashed ("state created after the snapshot was taken")
             kotlinx.coroutines.withContext(Dispatchers.Main) {
+            endSnapshot()
             pendingPlay?.let { k -> pendingPlay = null; channels.firstOrNull { it.key == k }?.let { play(it) } }
-            if (!groupInit) {
+            if (!groupInit || group !in groupList) {
                 groupInit = true
                 val gl = groupList
                 val last = store.lastGroup
@@ -214,6 +242,7 @@ class AppModel(private val app: Application) : AndroidViewModel(app) {
             }
             }
             for (s in srcs) SyncStatus.get(s.id, SyncKind.CHANNELS).let { r -> if (r.lastErr >= t0) message = "${s.name}: channels not updated (${r.err}), showing the stored list" }
+            dbOpen?.join()
             val guideChanged = loadEpg(srcs, force)
             scheduleSeries()
             var catChanged = false
@@ -228,7 +257,7 @@ class AppModel(private val app: Application) : AndroidViewModel(app) {
     }
 
     private fun loadEpg(srcs: List<Source>, force: Boolean): Boolean {
-        rebuildIndex() // cache first: show whatever is stored right away
+        if (epg !is DbEpg) rebuildIndex() // cache first: show whatever is stored right away (opened early by loadAll)
         var changed = false
         for (s in srcs) {
             val mine = channels.filter { it.sourceId == s.id }
@@ -301,6 +330,12 @@ class AppModel(private val app: Application) : AndroidViewModel(app) {
         // (a locked channel is not resumed at start: it would play without the PIN)
         // (debug builds: `setprop debug.tvbro.noautoplay 1` starts with nothing playing, settings untouched)
         val last = if (store.startLast && !DebugHooks.noAutoplay()) channels.firstOrNull { it.key == store.lastKey }?.takeUnless { isLocked(it) } else null
+        if (snapRestored) {
+            // the snapshot already put the screen back (the user may have moved on since): only the real objects now
+            current?.let { c -> channels.firstOrNull { it.key == c.key }?.let { if (it != c) current = it } }
+            focusCh?.let { c -> channels.firstOrNull { it.key == c.key }?.let { if (it != c) focusCh = it } }
+            return
+        }
         if (last != null) current = last
         (p.getOrNull(2)?.takeIf { it.isNotEmpty() }?.let { k -> channels.firstOrNull { it.key == k } } ?: last)?.let { focusCh = it }
         if (screen != Screen.LIST) return // a phone link or a "play" intent already took over
@@ -325,6 +360,8 @@ class AppModel(private val app: Application) : AndroidViewModel(app) {
     var groupMoved = false
     /** Where Right from the side menu goes back to (the TV screen's focused channel); null = default focus search. */
     var railRight: io.github.kmmarin.tvbro.ui.SafeFocus? = null
+    /** The TV screen's Back: the guide back to now, or the groups from the programmes; false: not handled (side menu). */
+    var tvBack: (() -> Boolean)? = null
     /** The side menu's current-section icon: where Left from a section's first column goes. */
     var railSel: io.github.kmmarin.tvbro.ui.SafeFocus? = null
     /** Where Back from Settings goes (full screen when opened from the player's quick bar). */
@@ -365,11 +402,29 @@ class AppModel(private val app: Application) : AndroidViewModel(app) {
 
     fun zap(delta: Int) {
         // channel up / down skips locked channels (they open only through play(), which asks for the PIN)
-        val l = filtered.ifEmpty { shown }.filter { !isLocked(it) || it.key == current?.key }
+        // within the playing channel's group: the one shown on the TV screen when it is there, else its own (played
+        // from Search or My list, Up went to the first channel of whatever group the TV screen showed)
+        val cur = current
+        val base = filtered.takeIf { f -> cur == null || f.any { it.key == cur.key } }
+            ?: shown.filter { it.group == cur?.group }.ifEmpty { filtered.ifEmpty { shown } }
+        val l = base.filter { !isLocked(it) || it.key == current?.key }
         if (l.isEmpty()) return
         val i = l.indexOfFirst { it.key == current?.key }
         val n = l[((if (i < 0) 0 else i) + delta).mod(l.size)]
         current = n; catchup = null; store.lastKey = n.key
+    }
+
+    /** Live channels watched lately (keys, newest first): the player's quick-access row. In memory, saved on change. */
+    var recentCh by mutableStateOf(store.recentChannels()); private set
+    fun noteWatched(c: Channel) {
+        val l = ChannelHistory.add(recentCh, c.key)
+        if (l != recentCh) { recentCh = l; store.saveRecentChannels(l) }
+    }
+
+    /** Live TV switches to [c] at once (player quick-access row, history); a locked channel asks for the PIN. */
+    fun zapTo(c: Channel) {
+        if (isLocked(c)) { play(c); return }
+        current = c; catchup = null; store.lastKey = c.key
     }
 
     fun zapNumber(n: Int): Boolean {
@@ -387,7 +442,7 @@ class AppModel(private val app: Application) : AndroidViewModel(app) {
         val url = if (CatchupUrl.supports(c, p.start, now)) CatchupUrl.build(c, p.start, p.stop, now) else null
         if (url == null) { toast("Catch-up not available for this programme"); return }
         current = c; store.lastKey = c.key
-        catchup = CatchupPlay(url, p.title)
+        catchup = CatchupPlay(url, p.title, (p.stop - p.start) * 1000)
         screen = Screen.PLAYER
     }
 
@@ -430,7 +485,21 @@ class AppModel(private val app: Application) : AndroidViewModel(app) {
         return false
     }
 
+    /**
+     * Row URL_GUARD of [CoreSwitch]: the source's addresses are checked before it is saved (no DNS here; host names
+     * are checked when they are resolved). Null when allowed or when the row runs Kotlin.
+     */
+    private fun sourceRefusal(s: Source): String? {
+        val shadow = CoreSwitch.shadow(CoreSwitch.Row.URL_GUARD)
+        if (!CoreSwitch.core(CoreSwitch.Row.URL_GUARD) && !shadow) return null
+        val urls = if (s.isXtream) listOf(Xtream.normalizeServer(s.server) + "/") else listOf(s.url) + s.epgUrl.split(Regex("[,\\s]+")).filter { it.isNotBlank() }
+        val r = urls.firstNotNullOfOrNull { Core.urlRefusal(it) }
+        if (shadow) { CoreShadow.urlGuard("add-source", r); return null }
+        return r?.let { Diag.log("add source refused by the URL guard: $it"); "Address not allowed ($it)" }
+    }
+
     fun addSource(s: Source) {
+        sourceRefusal(s)?.let { toast(it); return }
         sources = sources + s.copy(id = UUID.randomUUID().toString().take(8))
         store.saveSources(sources)
         screen = Screen.LIST
@@ -498,6 +567,7 @@ class AppModel(private val app: Application) : AndroidViewModel(app) {
             kind = if (xt) "xtream" else "m3u", url = if (xt) "" else url, epgUrl = if (xt) "" else (f["epg"] ?: "").trim(),
             server = if (xt) server else "", user = if (xt) user else "", pass = if (xt) pass else "",
         )
+        sourceRefusal(s)?.let { return it }
         sources = if (edit != null) sources.map { if (it.id == edit.id) s else it } else sources + s
         store.saveSources(sources)
         if (edit != null) repo.removeSourceFiles(edit.id)
@@ -516,7 +586,7 @@ class AppModel(private val app: Application) : AndroidViewModel(app) {
         pinGate.waitSec().let { if (it > 0) { toast("Too many wrong PINs: wait $it s"); return } }
         prompt = PromptState("Enter PIN", "", true) { v ->
             when (val r = pinGate.check(prefs.pinHash, v)) {
-                is PinGate.Result.Ok -> then()
+                is PinGate.Result.Ok -> { if (Pins.needsRehash(prefs.pinHash)) savePrefs2(prefs.copy(pinHash = Pins.hash(v))); then() }
                 is PinGate.Result.Wrong -> toast(if (r.waitSec > 0) "Wrong PIN. Wait ${r.waitSec} s" else "Wrong PIN")
                 is PinGate.Result.Wait -> toast("Too many wrong PINs: wait ${r.sec} s")
             }
@@ -524,7 +594,7 @@ class AppModel(private val app: Application) : AndroidViewModel(app) {
     }
 
     fun setPin() {
-        val doSet = { prompt = PromptState("New PIN (4 to 8 digits)", "", true) { v -> if (Pin.validFormat(v)) { savePrefs2(prefs.copy(pinHash = Pin.hash(v))); toast("PIN saved") } else toast("Use 4 to 8 digits") } }
+        val doSet = { prompt = PromptState("New PIN (4 to 8 digits)", "", true) { v -> if (Pin.validFormat(v)) { savePrefs2(prefs.copy(pinHash = Pins.hash(v))); toast("PIN saved") } else toast("Use 4 to 8 digits") } }
         if (prefs.pinHash.isEmpty()) doSet() else askPin(doSet)
     }
 
@@ -538,7 +608,7 @@ class AppModel(private val app: Application) : AndroidViewModel(app) {
         }
         if (prefs.pinHash.isEmpty()) {
             prompt = PromptState("Create a PIN first (4 to 8 digits)", "", true) { v ->
-                if (Pin.validFormat(v)) { savePrefs2(prefs.copy(pinHash = Pin.hash(v))); act() } else toast("Use 4 to 8 digits")
+                if (Pin.validFormat(v)) { savePrefs2(prefs.copy(pinHash = Pins.hash(v))); act() } else toast("Use 4 to 8 digits")
             }
         } else askPin(act)
     }
@@ -586,26 +656,78 @@ class AppModel(private val app: Application) : AndroidViewModel(app) {
     }
 
     fun openGroupMenu(g: String) {
-        if (g == GROUP_ALL || g == GROUP_FAV) return
         val items = ArrayList<Pair<String, () -> Unit>>()
-        items += (if ("g|$g" in favourites) "Remove from My list" else "Add to My list") to { toggleFavGroup(g) }
-        if (g in prefs.custom) {
-            items += "Delete group" to { savePrefs2(prefs.copy(custom = prefs.custom - g)); if (group == g) group = GROUP_ALL }
-        } else {
-            items += "Rename" to { prompt = PromptState("Group name", prefs.groupNames[g] ?: g, false) { v -> if (v.isNotBlank()) savePrefs2(prefs.copy(groupNames = prefs.groupNames + (g to v.trim()))) } }
-            // the hidden group comes back from Settings > Channels and groups
-            items += "Hide group" to { savePrefs2(prefs.copy(hiddenGroups = prefs.hiddenGroups + g)); if (group == g) group = GROUP_ALL }
-            // moves among the provider groups only: Favourites and All channels stay at the top (focus stays on the
-            // moved group: the group column is keyed by name)
-            val plain = providerGroups().let { all -> all.filter { it !in prefs.hiddenGroups } + all.filter { it in prefs.hiddenGroups } }
-            items += "Move up" to { groupMoved = true; savePrefs2(prefs.copy(groupOrder = move(plain, g, -1))) }
-            items += "Move down" to { groupMoved = true; savePrefs2(prefs.copy(groupOrder = move(plain, g, 1))) }
-            items += "Send to top" to { groupMoved = true; savePrefs2(prefs.copy(groupOrder = GroupOrder.sendTo(plain, g, -1))) }
-            items += "Send to bottom" to { groupMoved = true; savePrefs2(prefs.copy(groupOrder = GroupOrder.sendTo(plain, g, 1))) }
+        if (g != GROUP_ALL && g != GROUP_FAV) {
+            items += (if ("g|$g" in favourites) "Remove from My list" else "Add to My list") to { toggleFavGroup(g) }
+            if (g in prefs.custom) {
+                items += "Delete group" to { val at = groupList.indexOf(g); savePrefs2(prefs.copy(custom = prefs.custom - g)); if (group == g) focusGroupAt(at) }
+            } else {
+                items += "Rename" to { prompt = PromptState("Group name", prefs.groupNames[g] ?: g, false) { v -> if (v.isNotBlank()) savePrefs2(prefs.copy(groupNames = prefs.groupNames + (g to v.trim()))) } }
+                items += "Hide group" to { hideGroup(g) }
+                // moves among the provider groups only: Favourites and All channels stay at the top. Move up / down: focus
+                // stays on the moved group (the group column is keyed by name). Top / bottom: on the group now in its
+                // place, so focus stays in the group column and on screen (it jumped into the channel list).
+                val plain = providerGroups().let { all -> all.filter { it !in prefs.hiddenGroups } + all.filter { it in prefs.hiddenGroups } }
+                items += "Move up" to { groupMoved = true; savePrefs2(prefs.copy(groupOrder = move(plain, g, -1))) }
+                items += "Move down" to { groupMoved = true; savePrefs2(prefs.copy(groupOrder = move(plain, g, 1))) }
+                items += "Send to top" to { val t = nextGroup(g); savePrefs2(prefs.copy(groupOrder = GroupOrder.sendTo(plain, g, -1))); focusGroup(t) }
+                items += "Send to bottom" to { val t = nextGroup(g); savePrefs2(prefs.copy(groupOrder = GroupOrder.sendTo(plain, g, 1))); focusGroup(t) }
+            }
+            items += (if (g in prefs.locked) "Unlock group" else "Lock group (PIN)") to { toggleLock(g) }
         }
-        items += (if (g in prefs.locked) "Unlock group" else "Lock group (PIN)") to { toggleLock(g) }
+        val hidden = providerGroups().filter { it in prefs.hiddenGroups }
+        if (hidden.isNotEmpty()) items += "Show hidden groups... (${hidden.size})" to { showHiddenGroups() }
+        if (items.isEmpty()) return
         menu = MenuState(groupLabel(g), items)
     }
+
+    /** The TV screen's way to focus its selected group (set while the TV screen is composed). */
+    var focusGroupSel: (() -> Boolean)? = null
+
+    /**
+     * Selects and focuses the group now at [at] in the group column (the next one; the one before at the end), skipping
+     * [avoid] and locked groups, once the open menu has closed.
+     */
+    fun focusGroupAt(at: Int, avoid: String? = null) = focusGroup(GroupOrder.neighbour(groupList, at, avoid) { x -> x !in prefs.locked || x in unlocked })
+
+    /** The group after [g] in the column (before it at the end), skipping locked ones: where focus goes when [g] leaves. */
+    private fun nextGroup(g: String): String {
+        val gl = groupList; val i = gl.indexOf(g)
+        return if (i < 0) group else GroupOrder.neighbour(gl, i + 1, g) { x -> x !in prefs.locked || x in unlocked }
+    }
+
+    private fun focusGroup(t: String) {
+        group = t
+        focusGroupSel?.let { f -> io.github.kmmarin.tvbro.ui.FocusMemory.nextFocus = f }
+    }
+
+    /** One hidden-group undo at a time: the bar shown after "Hide group" (see UndoBar). */
+    class UndoState(val text: String, val undo: () -> Unit)
+    var undo by mutableStateOf<UndoState?>(null)
+
+    fun hideGroup(g: String) {
+        val at = groupList.indexOf(g)
+        savePrefs2(prefs.copy(hiddenGroups = prefs.hiddenGroups + g))
+        if (group == g) focusGroupAt(at)
+        undo = UndoState("Group hidden: ${prefs.groupNames[g] ?: g}") { unhideGroup(g) }
+    }
+
+    fun unhideGroup(g: String) {
+        savePrefs2(prefs.copy(hiddenGroups = prefs.hiddenGroups - g))
+        if (g !in prefs.locked || g in unlocked) focusGroup(g)
+    }
+
+    /** Group menu > Show hidden groups...: one row per hidden group, OK shows it again (no confirmation). */
+    fun showHiddenGroups() {
+        val hidden = providerGroups().filter { it in prefs.hiddenGroups }
+        if (hidden.isEmpty()) { toast("No hidden groups"); return }
+        val items = hidden.map { h -> "Show ${prefs.groupNames[h] ?: h}" to { unhideGroup(h) } }.toMutableList()
+        if (hidden.size > 1) items += "Show all ${hidden.size}" to { savePrefs2(prefs.copy(hiddenGroups = prefs.hiddenGroups - hidden.toSet())); focusGroup(hidden.first()) }
+        menu = MenuState("Hidden groups", items)
+    }
+
+    /** A popup layer is open (focus stays in it; closing it puts focus back). */
+    fun layerOpen(): Boolean = menu != null || prompt != null || progMenu != null || undo != null || dueReminder != null
 
     fun newGroup() { prompt = PromptState("New group name", "", false) { v ->
         val n = v.trim(); if (n.isNotEmpty() && n != GROUP_ALL && n != GROUP_FAV) savePrefs2(prefs.copy(custom = prefs.custom + (n to emptyList())))
@@ -707,7 +829,7 @@ class AppModel(private val app: Application) : AndroidViewModel(app) {
     private fun startRec(r: Rec) {
         RecRepo.put(r)
         if (r.startMs <= System.currentTimeMillis() + 2000) {
-            try { app.startForegroundService(android.content.Intent(app, RecordingService::class.java).setAction("start").putExtra("id", r.id)) }
+            try { androidx.core.content.ContextCompat.startForegroundService(app, android.content.Intent(app, RecordingService::class.java).setAction("start").putExtra("id", r.id)) }
             catch (e: Exception) { toast("Could not start recording service") }
         } else RecRepo.schedule(app, r)
     }
@@ -837,22 +959,87 @@ class AppModel(private val app: Application) : AndroidViewModel(app) {
     }
     var storageTick by mutableIntStateOf(0)
 
-    /** Asks for the share step by step on the TV; the password is stored encrypted and never shown or logged. */
+    // ---- Add / Edit network share: one screen (typed on the TV or sent from a phone), Test before Save ----
+    /** The values on the screen, not saved until Save. The password is never shown, logged or sent to the phone. */
+    var smbForm by mutableStateOf(SmbConfig())
+    /** Bumped when the phone filled the form (the screen moves focus to Save). */
+    var smbFilled by mutableIntStateOf(0); private set
+    class SmbTestState(val running: Boolean, val ok: Boolean, val text: String, val tested: SmbConfig?)
+    var smbTest by mutableStateOf<SmbTestState?>(null); private set
+    private var smbTestGen = 0
+    var smbLink by mutableStateOf<LinkState?>(null); private set
+    var smbLinkStatus by mutableStateOf(""); private set
+    private var smbServer: LinkServer? = null
+    private var smbBack = Screen.SETTINGS
+
+    /** Opens the share screen with the saved share (or the defaults: folder "tvBro", guest). */
     fun setupSmb() {
         val c = store.smb()
-        prompt = PromptState("Network share: server name or IP address", c.host, false) { host ->
-            prompt = PromptState("Share name (e.g. recordings)", c.share, false) { share ->
-                prompt = PromptState("Folder inside the share (optional)", c.path, false) { path ->
-                    prompt = PromptState("User name (empty for guest access)", c.user, false) { user ->
-                        prompt = PromptState(if (c.pass.isNotEmpty()) "Password (leave empty to keep the saved one)" else "Password", "", true) { pass ->
-                            val n = SmbConfig(host.trim(), share.trim().trim('/', '\\'), path.trim(), user.trim(), if (pass.isEmpty()) c.pass else pass, c.domain)
-                            store.saveSmb(n)
-                            if (n.ok) { store.recStorage = SmbShare.STORAGE_KEY; storageTick++; testStorage() } else toast("Server and share are needed")
-                        }
-                    }
-                }
-            }
+        smbForm = if (c.host.isBlank() && c.share.isBlank()) SmbConfig() else c
+        smbTest = null; smbTestGen++
+        smbLinkStatus = ""
+        if (screen != Screen.SMB_SETUP) smbBack = screen
+        screen = Screen.SMB_SETUP
+    }
+
+    fun closeSmb() { stopSmbLink(); smbTestGen++; smbTest = null; screen = smbBack; smbBack = Screen.SETTINGS }
+
+    /** Test with the values on the screen (before saving): off the main thread, capped at 15 s. */
+    fun testSmbForm() {
+        val c = SmbSetup.normalize(smbForm); smbForm = c
+        val g = ++smbTestGen
+        if (!c.ok) { smbTest = SmbTestState(false, false, "Fill in the server and the share name first", null); return }
+        smbTest = SmbTestState(true, false, "Testing ${c.label}...", null)
+        val work = viewModelScope.async(Dispatchers.IO) {
+            try { SmbShare.check(c) } catch (e: Exception) { SmbShare.Check(false, "Could not connect: " + SmbShare.explain(e)) }
         }
+        viewModelScope.launch {
+            val r = kotlinx.coroutines.withTimeoutOrNull(15_000) { work.await() }
+                ?: SmbShare.Check(false, "Could not connect: server did not answer. Check the address and that the server is on.")
+            if (g == smbTestGen) smbTest = SmbTestState(false, r.ok, r.text, if (r.ok) c else null)
+        }
+    }
+
+    /** Saves (encrypted, see [Store.saveSmb]) and records to the share from now on. */
+    fun saveSmbForm() {
+        val c = SmbSetup.normalize(smbForm); smbForm = c
+        if (!c.ok) { smbTestGen++; smbTest = SmbTestState(false, false, "Fill in the server and the share name first", null); return }
+        store.saveSmb(c)
+        store.recStorage = SmbShare.STORAGE_KEY; storageTick++
+        val t = smbTest
+        closeSmb()
+        if (t != null && t.ok && t.tested == c) { storageTest = "OK: ${c.label} is writable, " + t.text.substringAfter("Connected - "); toast("Network share saved") } else testStorage()
+    }
+
+    fun startSmbLink() {
+        stopSmbLink()
+        val ip = LinkNet.lanAddress() ?: return
+        val gate = CodeGate.create()
+        val srv = LinkServer(gate, SmbLinkPage.html(), { SmbSetup.info(smbForm) }, { f -> applySmbLink(f) }, { onSmbLinkDone() })
+        try {
+            val port = srv.start(ip)
+            smbServer = srv
+            val st = LinkState("http://${ip.hostAddress}:$port/", gate.code, null, true)
+            smbLink = st
+            // the server stops when its one-time code expires (the screen renews it before that)
+            viewModelScope.launch { kotlinx.coroutines.delay(10 * 60_000L); if (smbLink === st) stopSmbLink() }
+        } catch (e: Exception) { srv.stop() }
+    }
+
+    fun stopSmbLink() { smbServer?.stop(); smbServer = null; smbLink = null }
+
+    // called on the link server's thread
+    private fun applySmbLink(f: Map<String, String>): String? {
+        val (n, err) = SmbSetup.fromPhone(f, smbForm)
+        // (the page checks the fields first; a refused submission still used up the code: a new one after the reply)
+        if (n == null) { viewModelScope.launch(Dispatchers.Main) { kotlinx.coroutines.delay(800); if (screen == Screen.SMB_SETUP) startSmbLink() }; return "$err, then scan the new code on the TV" }
+        viewModelScope.launch(Dispatchers.Main) { smbForm = n; smbFilled++; smbLinkStatus = "Filled in from your phone"; testSmbForm() }
+        return null
+    }
+
+    // the code is used up: a new one (and QR code) so the phone can send corrections
+    private fun onSmbLinkDone() {
+        viewModelScope.launch(Dispatchers.Main) { if (screen == Screen.SMB_SETUP) startSmbLink() else stopSmbLink() }
     }
 
     var storageTest by mutableStateOf(""); private set
@@ -881,18 +1068,27 @@ class AppModel(private val app: Application) : AndroidViewModel(app) {
 
     /** Header info for the focused title, debounced and read from the disk cache when possible. */
     fun peekVod(item: VodItem) {
-        focusVod = item; peekJob?.cancel(); peek = null
-        if (isDirect(item) || isLocked(item)) return
+        if (focusVod?.key == item.key && peek != null) return
+        focusVod = item; peekJob?.cancel()
+        if (isDirect(item) || isLocked(item)) { peek = null; return }
+        // details read before show at once (back to a title, or its page opening right after the header showed them)
+        peek = infoCache[item.key]
+        if (peek != null) return
         val s = sources.firstOrNull { it.id == item.sourceId } ?: return
         peekJob = viewModelScope.launch(Dispatchers.IO) {
             kotlinx.coroutines.delay(300)
             try {
                 val txt = repo.info(s, item.kind == "series", item.id)
                 val d = if (item.kind == "series") VodApi.parseSeriesInfo(txt) else VodApi.parseVodInfo(txt)
+                infoCache[item.key] = d
                 if (focusVod?.key == item.key) peek = d
             } catch (e: kotlinx.coroutines.CancellationException) { throw e } catch (e: Exception) { }
         }
     }
+    /** Parsed title details, newest 60 (the header and the title's page share them). */
+    private val infoCache = java.util.Collections.synchronizedMap(object : LinkedHashMap<String, VodDetail>(64, 0.75f, true) {
+        override fun removeEldestEntry(e: MutableMap.MutableEntry<String, VodDetail>?) = size > 60
+    })
 
     /** A playlist (M3U) title: its address lives only in the decrypted playlist, never with the stored title. */
     fun isDirect(item: VodItem) = item.url != null || item.key.startsWith("v|")
@@ -932,7 +1128,7 @@ class AppModel(private val app: Application) : AndroidViewModel(app) {
         val ext = url.substringBefore('?').substringAfterLast('.', "mp4").take(4).filter { it.isLetterOrDigit() }.ifEmpty { "mp4" }
         val base = RecRepo.newFile(dir, title, System.currentTimeMillis()).nameWithoutExtension
         DlRepo.put(Dl(UUID.randomUUID().toString().take(8), key, title, url, java.io.File(dir, "$base.$ext").path, cat = cat))
-        try { app.startForegroundService(dlIntent("dl")) } catch (e: Exception) { toast("Could not start the download service") }
+        try { androidx.core.content.ContextCompat.startForegroundService(app, dlIntent("dl")) } catch (e: Exception) { toast("Could not start the download service") }
         if (!quiet) toast("Download queued")
     }
 
@@ -941,7 +1137,7 @@ class AppModel(private val app: Application) : AndroidViewModel(app) {
         queueDownload("e|${series.sourceId}|${e.id}", "${series.name} S%02dE%02d ${VodFmt.cleanTitle(series.name, e.title)}".format(e.season, e.num), urlFor(series, e), quiet, series.category)
     fun downloadSeason(series: VodItem, eps: List<Episode>) { eps.forEach { downloadEpisode(series, it, true) }; toast("Queued ${eps.size} episodes") }
     fun pauseDl(d: Dl) { DlRepo.put(d.copy(status = "paused", note = "")); app.startService(dlIntent("dlpause", d.id)) }
-    fun resumeDl(d: Dl) { DlRepo.put(d.copy(status = "queued", note = "")); try { app.startForegroundService(dlIntent("dl")) } catch (e: Exception) { } }
+    fun resumeDl(d: Dl) { DlRepo.put(d.copy(status = "queued", note = "")); try { androidx.core.content.ContextCompat.startForegroundService(app, dlIntent("dl")) } catch (e: Exception) { } }
     fun cancelDl(d: Dl) { app.startService(dlIntent("dlcancel", d.id)) }
     fun playLocal(d: Dl) {
         // a download of a locked category asks for the PIN (older downloads: the category of the stored title)
@@ -985,16 +1181,24 @@ class AppModel(private val app: Application) : AndroidViewModel(app) {
         screen = Screen.LIST
         refreshLists()
         if (vodSeries == series && vodCatNames.isNotEmpty()) return
+        if (vodCatNames.isNotEmpty()) store.setVodScroll(vodSeries, vodScroll) // (the other kind's place)
         vodSeries = series; vodItems = emptyList(); vodCatNames = emptyList(); vodMsg = "Loading categories..."
-        vodCat = if (mySnaps.any { (it.kind == "series") == series }) CAT_MYLIST else CAT_RECENT
+        // the category shown last time (and its scroll); the first time All movies / All shows, never an empty page
+        val cat = store.vodCat(series) ?: VOD_ALL
+        val scroll = store.vodScroll(series)
+        vodCat = cat
+        // categories of the stored catalogue read before (Movies <-> Shows, or at start): shown at once
+        vodCatCache[series]?.takeIf { it.first == SearchStore.version.intValue }?.let { (_, cats) ->
+            catIndex = emptyMap(); vodFromDb = true; vodCatNames = cats; vodMsg = ""; showVodCat(cat, scroll); return
+        }
         val srcs = sources
         viewModelScope.launch(Dispatchers.IO) {
             // stored catalogue (synced into search.db): categories and pages come from the database
-            val kind = if (series) SearchIndex.SERIES else SearchIndex.MOVIE
-            val dbCats = SearchStore.use(app) { db -> if (SearchIndex.count(db, kind) > 0) SearchIndex.categories(db, kind) else null }
+            val dbCats = storedCats(series)
             if (dbCats != null) {
                 catIndex = emptyMap(); vodFromDb = true
                 vodCatNames = dbCats; vodMsg = ""
+                kotlinx.coroutines.withContext(Dispatchers.Main) { if (vodSeries == series && vodCat == cat) showVodCat(cat, scroll) }
                 return@launch
             }
             vodFromDb = false
@@ -1011,19 +1215,38 @@ class AppModel(private val app: Application) : AndroidViewModel(app) {
             catIndex = idx
             vodCatNames = idx.keys.sorted() + (if (!series && m3uVod.isNotEmpty()) listOf(M3U_CAT) else emptyList())
             if (vodMsg == "Loading categories...") vodMsg = if (vodCatNames.isEmpty()) "No categories (Xtream sources provide Movies/Series)." else ""
+            if (vodCatNames.isNotEmpty() || cat == CAT_MYLIST || cat == CAT_RECENT) kotlinx.coroutines.withContext(Dispatchers.Main) {
+                if (vodSeries == series && vodCat == cat) showVodCat(cat.takeIf { it in vodCatNames || it == CAT_MYLIST || it == CAT_RECENT || it == VOD_ALL } ?: VOD_ALL, scroll)
+            }
         }
     }
+
+    /** Movies / Shows categories of the stored catalogue with the index version they were read at. */
+    private val vodCatCache = java.util.concurrent.ConcurrentHashMap<Boolean, Pair<Int, List<String>>>()
+
+    /** The stored catalogue's categories (off the main thread), or null when it holds no titles of that kind. */
+    private fun storedCats(series: Boolean): List<String>? {
+        val v = SearchStore.version.intValue
+        val kind = if (series) SearchIndex.SERIES else SearchIndex.MOVIE
+        return SearchStore.use(app) { db -> if (db.count(kind) > 0) db.categories(kind) else null }?.also { vodCatCache[series] = v to it }
+    }
+
+    /** Reads both category lists ahead (cheap: two queries), so the first visit to Movies or Shows shows them at once. */
+    fun prefetchVod() { viewModelScope.launch(Dispatchers.IO) { try { storedCats(false); storedCats(true) } catch (e: Exception) { } } }
 
     fun selectVodCat(g: String) {
         if (g in prefs.locked && g !in unlocked) askPin { unlocked = unlocked + g; showVodCat(g) } else showVodCat(g)
     }
 
-    private fun showVodCat(g: String) {
-        vodCat = g; vodJob?.cancel(); vodItems = emptyList(); vodScroll = 0 to 0
+    /** Shows category [g] at [scroll] (first item, offset; the top for a category picked by the user). */
+    private fun showVodCat(g: String, scroll: Pair<Int, Int> = 0 to 0) {
+        vodCat = g; vodJob?.cancel(); vodItems = emptyList(); vodScroll = scroll
+        store.setVodCat(vodSeries, g); store.setVodScroll(vodSeries, scroll)
         if (g == CAT_MYLIST || g == CAT_RECENT) { refreshLists(); vodMsg = ""; return }
         vodMsg = "Loading..."
         val series = vodSeries
-        if (vodFromDb) { vodMsg = ""; vodHasMore = true; vodLoadingPage = false; vodMore(); return }
+        // (the remembered place may lie beyond the first page: enough pages for it, in one query)
+        if (vodFromDb) { vodMsg = ""; vodHasMore = true; vodLoadingPage = false; vodMore(first = maxOf(FIRST_PAGE, scroll.first + 60)); return }
         vodJob = viewModelScope.launch(Dispatchers.IO) {
             val all = ArrayList<VodItem>()
             try {
@@ -1041,12 +1264,16 @@ class AppModel(private val app: Application) : AndroidViewModel(app) {
         // a title of a locked category (from My list, Continue watching, search) asks for the PIN first
         if (isLocked(it)) { askPin { unlocked = unlocked + it.category; openDetail(it) }; return }
         if (isDirect(it)) { val u = directUrl(it); if (u != null) playVod(it.key, u, it.name, it) else toast("This title is not in the playlist any more"); return }
-        detail = it; detailInfo = null; detailMsg = "Loading..."; screen = Screen.DETAIL
+        val known = infoCache[it.key]
+        detail = it; detailInfo = known; detailMsg = if (known == null) "Loading..." else ""; screen = Screen.DETAIL
+        if (known != null) return
         val s = sources.firstOrNull { s -> s.id == it.sourceId } ?: return
         viewModelScope.launch(Dispatchers.IO) {
             try {
                 val txt = repo.info(s, it.kind == "series", it.id)
-                detailInfo = if (it.kind == "series") VodApi.parseSeriesInfo(txt) else VodApi.parseVodInfo(txt)
+                val d = if (it.kind == "series") VodApi.parseSeriesInfo(txt) else VodApi.parseVodInfo(txt)
+                infoCache[it.key] = d
+                if (detail?.key == it.key) detailInfo = d
                 detailMsg = ""
                 Diag.log("details: ${detailInfo?.episodes?.size ?: 0} episodes")
             } catch (e: Exception) { detailMsg = "Could not load details: ${Net.describe(e)}"; Diag.log("details failed: ${Net.describe(e)}") }
@@ -1102,7 +1329,10 @@ class AppModel(private val app: Application) : AndroidViewModel(app) {
     @Volatile private var vodLoadingPage = false
 
     /** Appends the next page of the current category (called as the grid nears its end). */
-    fun vodMore() {
+    /** Titles in a category's first page: a screen and a half of posters, so the grid shows at once (the rest pages in). */
+    private val FIRST_PAGE = 48
+
+    fun vodMore(first: Int = 0) {
         if (!vodFromDb || !vodHasMore || vodLoadingPage) return
         val cat = vodCat; val kind = if (vodSeries) SearchIndex.SERIES else SearchIndex.MOVIE
         if (cat == CAT_MYLIST || cat == CAT_RECENT) return
@@ -1110,9 +1340,10 @@ class AppModel(private val app: Application) : AndroidViewModel(app) {
         val offset = vodItems.size
         vodJob = viewModelScope.launch(Dispatchers.IO) {
             try {
-                val page = SearchStore.use(app) { SearchIndex.page(it, kind, if (cat == VOD_ALL) null else cat, offset, VOD_PAGE) } ?: emptyList()
+                val n = if (first > 0) first else VOD_PAGE
+                val page = SearchStore.use(app) { it.page(kind, if (cat == VOD_ALL) null else cat, offset, n) } ?: emptyList()
                 if (vodCat == cat) {
-                    vodItems = vodItems + page; vodHasMore = page.size == VOD_PAGE
+                    vodItems = vodItems + page; vodHasMore = page.size == n
                     if (vodItems.isEmpty()) vodMsg = "Nothing in this category."
                 }
             } finally { vodLoadingPage = false }
@@ -1134,6 +1365,19 @@ class AppModel(private val app: Application) : AndroidViewModel(app) {
     private var keyMapFor: List<Channel>? = null
     private var byKey: Map<String, Channel> = emptyMap()
     private var byEpg: Map<String, Channel> = emptyMap()
+    private var foldedFor: List<Channel>? = null
+    private var folded: Array<String> = emptyArray()
+    /** Search opened by the user (side menu, Search key, guide): the keyboard opens with it, as in TiviMate. */
+    var searchKeyboard = false
+
+    fun openSearch() { searchKeyboard = true; section = Section.SEARCH; screen = Screen.LIST }
+
+    /** Folds the channel names for search before the first letter (~15,000 names: the first query paid for it). */
+    fun warmSearch() {
+        val sh = shown
+        if (foldedFor === sh) return
+        viewModelScope.launch(searchDispatcher) { if (foldedFor !== sh) { folded = Array(sh.size) { " " + Fold.text(sh[it].name) }; foldedFor = sh } }
+    }
 
     fun setSearch(q: String) {
         searchQ = q
@@ -1141,7 +1385,8 @@ class AppModel(private val app: Application) : AndroidViewModel(app) {
         if (Fold.text(q).length < 2) { searchView = null; return }
         val sh = shown; val shift = epgShiftMin * 60L; val names = prefs.names; val lockedCats = prefs.locked - unlocked
         searchJob = viewModelScope.launch {
-            kotlinx.coroutines.delay(200)
+            // (a letter on a TV keyboard takes longer than this: the wait only skips letters typed in one burst)
+            kotlinx.coroutines.delay(100)
             val v = kotlinx.coroutines.withContext(searchDispatcher) { runSearch(q, sh, shift, names.keys, lockedCats) }
             if (searchQ == q) searchView = v
         }
@@ -1166,17 +1411,28 @@ class AppModel(private val app: Application) : AndroidViewModel(app) {
         val now = System.currentTimeMillis() / 1000
         val maxDays = sh.maxOfOrNull { if (it.catchup != null) it.catchupDays else 0 } ?: 0
         val pastFrom = now - shift - maxDays * 86400L
-        val r = SearchStore.use(app) { SearchIndex.search(it, q, pastFrom) }
-        val fq = Fold.text(q)
-        // renamed channels are matched in memory (the index holds provider names)
-        val renamed = renamedKeys.mapNotNull { byKey[it] }.filter { Fold.rank(it.name, q) < 3 || Fold.text(it.name).contains(fq) }
-        val chans = if (r == null) sh.filter { Fold.text(it.name).contains(fq) }.sortedBy { Fold.rank(it.name, q) }.take(30)
-            else (renamed + r.channels.mapNotNull { byKey[it.key] }).distinctBy { it.key }
+        // The order TiviMate shows (user 2026-11-14: same results, same order): each row alphabetical over all its
+        // matches (favourite channels first), programmes by channel name. The index ranks and cuts at [perSection],
+        // so many more are fetched and the first [SEARCH_ROW] in name order are kept.
+        val r = SearchStore.search(app, q, pastFrom, SEARCH_FETCH)
+        // Channels are matched in memory over every channel (names folded once per list), the index's rule: each word
+        // of the query starts a word of the name. The index keeps only its best-ranked hits, names starting with the
+        // query first, so "4K: ESPN" and "ARG: ESPN" never reached the alphabetical row TiviMate shows for "espn".
+        if (foldedFor !== sh) { folded = Array(sh.size) { " " + Fold.text(sh[it].name) }; foldedFor = sh }
+        val toks = Fold.tokens(q).map { " $it" }
+        val names = folded
+        val found = sh.filterIndexed { i, _ -> val n = names[i]; toks.all { n.contains(it) } }
+        val favs = favourites
+        // (sort keys folded once per item: folding inside the comparator cost ~250 ms on the Fire TV)
+        fun <T> alpha(l: List<T>, name: (T) -> String, first: (T) -> Boolean = { false }): List<T> =
+            l.map { Triple(it, Fold.text(name(it)), first(it)) }.sortedWith(compareBy<Triple<T, String, Boolean>>({ !it.third }, { it.second }, { name(it.first) })).map { it.first }
+        val chans = alpha(found, { it.name }, { it.key in favs }).take(SEARCH_ROW)
         val groups = if (r == null) emptyList() else ProgGroups.group(r.programmes, { byEpg[it] }, { c, h -> ProgTime.classify(c, h.start + shift, h.stop + shift, now) }, { it.key })
             .map { (c, hs) -> c to hs.map { h -> val p = Programme(h.ch, h.start + shift, h.stop + shift, h.title, null, h.sub, h.ep); ProgRow(p, ProgTime.classify(c, p.start, p.stop, now)) }.filter { it.state != ProgState.PAST } }
+            .filter { it.second.isNotEmpty() }.let { g -> alpha(g, { it.first.name }) }
         val open = { v: VodItem -> v.category !in lockedCats }
-        return SearchView(q, chans, r?.movies?.map { it.toVod() }?.filter(open) ?: emptyList(), r?.series?.map { it.toVod() }?.filter(open) ?: emptyList(),
-            groups, (System.nanoTime() - t0) / 1_000_000, r != null)
+        val vod = { l: List<SearchHit>? -> alpha(l.orEmpty().map { it.toVod() }.filter(open), { it.name }).take(SEARCH_ROW) }
+        return SearchView(q, chans, vod(r?.movies), vod(r?.series), groups, (System.nanoTime() - t0) / 1_000_000, r != null)
     }
 
     /** Description for the search details card (read on focus, not part of the result rows). */
@@ -1251,7 +1507,7 @@ class AppModel(private val app: Application) : AndroidViewModel(app) {
     val watch: WatchDb get() = store.watch
     var autoplayNext by mutableStateOf(store.autoplayNext); private set
     fun changeAutoplayNext(b: Boolean) { autoplayNext = b; store.autoplayNext = b }
-    init { viewModelScope.launch(Dispatchers.IO) { try { watch.warm() } catch (e: Exception) { Diag.log("state: could not open state.db") } } }
+    init { viewModelScope.launch(Dispatchers.IO) { try { watch.warm() } catch (e: Exception) { Diag.log("state: could not open state.db") }; store.warmSnaps(); prefetchVod() } }
 
     fun epKey(series: VodItem, e: Episode) = "e|${series.sourceId}|${e.id}"
     fun epState(series: VodItem, e: Episode): WatchState? = watch.state(epKey(series, e))
@@ -1346,6 +1602,93 @@ class AppModel(private val app: Application) : AndroidViewModel(app) {
         watch.putSeries(if (audio) o.copy(audioLang = lang?.takeIf { it.isNotBlank() } ?: o.audioLang) else o.copy(subs = SubPref(on, lang ?: "")))
     }
 
+    // ---- Start snapshot: the TV screen as it was, shown in the first frame (see StartSnap) ----
+    /** The group column while the snapshot stands in for the channel list (null: from [channels]). */
+    var snapGroups by mutableStateOf<List<String>?>(null); private set
+    /** True while [channels] holds the snapshot's rows, until the stored channel list is loaded. */
+    var snapActive by mutableStateOf(false); private set
+    /** The real channel list was set (the snapshot must not replace it). */
+    @Volatile private var realLoaded = false
+    /** The TV screen's scroll (first visible row, offset) while it is composed. */
+    var tvView: (() -> Pair<Int, Int>)? = null
+
+    private fun applySnapshot() {
+        if (store.hasSourcesHint != true || screen != Screen.LIST || realLoaded) return
+        val t0 = android.os.SystemClock.uptimeMillis()
+        val s = StartSnap.read(app.filesDir, CacheKey.get(app)) ?: return
+        val p = store.lastUi.split('|')
+        if (p.getOrNull(1)?.let { it != Section.TV.name } == true) return // the app closed elsewhere (Movies, ...)
+        snapGroups = s.groups; snapActive = true
+        channels = s.rows
+        group = s.group; groupInit = true; groupReady = true
+        tvScroll[s.group] = (s.scrollIdx - s.first).coerceAtLeast(0) to s.scrollOff
+        val map = HashMap<String, Array<Programme>>(s.progs.size * 2)
+        for (c in s.rows) s.progs[c.key]?.let { a -> map[c.idKey ?: c.nameKey] = a; if (c.idKey == null) map[c.nameKey] = a }
+        epg = EpgIndex(map)
+        io.github.kmmarin.tvbro.ui.SnapGuide.progs = s.progs
+        section = Section.TV
+        val last = (s.current ?: s.rows.firstOrNull { it.key == store.lastKey })?.takeIf { it.key == store.lastKey }
+            ?.takeIf { store.startLast && !DebugHooks.noAutoplay() && !isLocked(it) }
+        if (last != null) current = last
+        focusCh = s.rows.firstOrNull { it.key == s.focusKey } ?: last?.takeIf { l -> s.rows.any { it.key == l.key } }
+        settingsSec = p.getOrNull(3)?.toIntOrNull() ?: 0
+        val scr = p.getOrNull(0)?.takeIf { it.isNotEmpty() }
+        screen = when {
+            last != null && (scr == null || scr == Screen.PLAYER.name) -> Screen.PLAYER
+            scr == Screen.SETTINGS.name -> Screen.SETTINGS
+            else -> Screen.LIST
+        }
+        snapRestored = true
+        Diag.log("start snapshot: ${s.rows.size} rows, ${s.progs.size} with guide, ${s.groups.size} groups, ${(System.currentTimeMillis() - s.savedAt) / 1000} s old, read+applied in ${android.os.SystemClock.uptimeMillis() - t0} ms")
+    }
+    /** The snapshot restored the screen: the full load does not move it again. */
+    private var snapRestored = false
+
+    /** Called with the stored channel list loaded (main thread): the snapshot gives way. */
+    private fun endSnapshot() {
+        if (!snapActive) return
+        snapActive = false; snapGroups = null
+        // (the rows keep showing the snapshot's programmes until the guide database has them)
+        viewModelScope.launch { kotlinx.coroutines.delay(30_000); io.github.kmmarin.tvbro.ui.SnapGuide.progs = emptyMap() }
+    }
+
+    /**
+     * Saves what the TV screen shows now (on stop, every minute in front, before a restart). Gathered on the main
+     * thread (a slice of the list and the guide cache), written on IO, or right here when [now] (the process ends).
+     */
+    fun saveSnapshot(now: Boolean = false) {
+        if (!started || snapActive || channels.isEmpty() || section != Section.TV || screen !in setOf(Screen.LIST, Screen.PLAYER, Screen.SETTINGS)) {
+            if (BuildConfig.DEBUG) Diag.log("start snapshot: not saved (started=$started snap=$snapActive channels=${channels.size} section=$section screen=$screen)")
+            return
+        }
+        val list = filtered
+        val (idx, off) = tvView?.invoke() ?: tvScroll[group] ?: (0 to 0)
+        val a = (idx - 3).coerceIn(0, (list.size - 1).coerceAtLeast(0))
+        val b = (idx + 22).coerceAtMost(list.size - 1)
+        val rows = if (b >= a) ArrayList(list.subList(a, b + 1)) else ArrayList()
+        val fk = focusCh?.key ?: ""
+        val nowS = System.currentTimeMillis() / 1000
+        val ws = io.github.kmmarin.tvbro.ui.GuideLayout.initialStart(nowS)
+        val we = ws + io.github.kmmarin.tvbro.ui.GuideLayout.WINDOW_MIN * 60L
+        val e = epg
+        val progs = HashMap<String, Array<Programme>>()
+        for (c in rows) {
+            val pr = (if (e is DbEpg) e.peek(c, ws - 1800, we + 1800) else e.programmes(c)).filter { it.stop > ws - 1800 && it.start < we + 1800 }
+            if (pr.isNotEmpty()) progs[c.key] = pr.toTypedArray()
+        }
+        val snap = StartSnap(System.currentTimeMillis(), screen.name, group, groupList, rows, a, idx, off, fk, current, progs)
+        val dir = app.filesDir
+        val write = { try { StartSnap.write(dir, snap, CacheKey.get(app)) } catch (x: Exception) { Diag.log("start snapshot not saved (${x.javaClass.simpleName})") } }
+        if (now) write() else viewModelScope.launch(Dispatchers.IO) { write() }
+    }
+
+    /** Settings > About > Advanced > Restart now: what must survive the restart. */
+    fun saveForRestart() { store.lastUi = listOf(screen.name, section.name, focusCh?.key ?: "", settingsSec.toString()).joinToString("|"); saveSnapshot(now = true) }
+
     // keep last: every property above is initialised by now
-    init { watchUiState(); DebugHooks.attach(this) }
+    init {
+        try { applySnapshot() } catch (e: Exception) { Diag.log("start snapshot failed (${e.javaClass.simpleName})") }
+        watchUiState(); DebugHooks.attach(this)
+        viewModelScope.launch { while (true) { kotlinx.coroutines.delay(60_000); if (foreground) saveSnapshot() } }
+    }
 }

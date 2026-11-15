@@ -96,7 +96,7 @@ object Pin {
  * 4-digit PIN cannot be walked through. A right PIN unlocks everything for [UNLOCK_MS] (4 h); [lockNow] ends it.
  * In memory only: a restart locks again. Times are milliseconds from [clock].
  */
-class PinGate(private val clock: () -> Long = System::currentTimeMillis) {
+class PinGate(private val verify: (pin: String, stored: String) -> Boolean = Pin::verify, private val clock: () -> Long = System::currentTimeMillis) {
     sealed class Result { object Ok : Result(); data class Wrong(val waitSec: Int) : Result(); data class Wait(val sec: Int) : Result() }
 
     private var fails = 0
@@ -111,7 +111,7 @@ class PinGate(private val clock: () -> Long = System::currentTimeMillis) {
     fun check(stored: String, pin: String): Result {
         val now = clock()
         if (now < waitUntil) return Result.Wait(waitSec())
-        if (stored.isNotEmpty() && Pin.verify(pin, stored)) { fails = 0; unlockedUntil = now + UNLOCK_MS; return Result.Ok }
+        if (stored.isNotEmpty() && verify(pin, stored)) { fails = 0; unlockedUntil = now + UNLOCK_MS; return Result.Ok }
         fails++
         if (fails >= MAX_FAILS) waitUntil = now + 30_000L * (1L shl ((fails - MAX_FAILS) / MAX_FAILS).coerceAtMost(4))
         return Result.Wrong(waitSec())

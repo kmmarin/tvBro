@@ -1,0 +1,8 @@
+tvBro 0.2.0
+- One player menu for live TV, catch-up, films, episodes and recordings; live captions
+- Instant start on the screen you left; faster guide, zapping, search and menus
+- New native parsing and guide engine: lower memory, faster on Fire TV
+- Network share setup on one screen (fill it in from your phone)
+- Scrolling and channel-number options; Last channel and History in the player
+- Fixes: recording on Android 7, clear message for streams that do not play, guide focus
+- Security: encrypted start-up snapshot, crash-proof list parsing

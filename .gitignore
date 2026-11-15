@@ -25,3 +25,6 @@ tools/private-patterns.txt
 tools/*.local.*
 deploy.local.*
 tools/demo/cache/
+
+# Real playlists for the Kotlin / Rust core comparison (CoreParityTest): never committed
+testdata/private/

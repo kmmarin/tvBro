@@ -45,11 +45,11 @@ fun EditorScreen(m: AppModel) {
 
     Column(Modifier.fillMaxSize().background(Bg).padding(24.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Text("Channels and groups", color = Accent, fontSize = 26.sp, modifier = Modifier.weight(1f))
+            SectionTitle("Channels and groups", Modifier.weight(1f))
             TvButton("+ New group", Modifier.focusRequester(fr)) { m.newGroup() }
             Spacer(Modifier.width(8.dp))
             TvButton("Reset all") {
-                m.menu = MenuState("Reset every rename, hidden item, order and own group?", listOf("Yes, reset to the provider's layout" to { m.resetLayout() }, "Cancel" to {}))
+                m.menu = MenuState("Reset every rename, hidden item, order and own group?", listOf("Yes, reset to the provider's layout" to { m.resetLayout() }))
             }
             Spacer(Modifier.width(8.dp))
             TvButton("Done") { m.screen = Screen.SETTINGS }
@@ -57,7 +57,8 @@ fun EditorScreen(m: AppModel) {
         Text("OK on a row for its actions. Hidden items disappear from TV, the guide and search.", color = TextDim, fontSize = 13.sp, modifier = Modifier.padding(vertical = 6.dp))
         Row(Modifier.fillMaxSize()) {
             LazyColumn(Modifier.width(380.dp).fillMaxHeight()) {
-                items(own + prov) { gr ->
+                // keyed: a moved group keeps the focus (it moves with the row and stays on screen)
+                items((own + prov).distinct(), key = { it }) { gr ->
                     val mine = gr in p.custom
                     val hidden = gr in p.hiddenGroups
                     val n = if (mine) p.custom[gr]?.size ?: 0 else m.channels.count { it.group == gr }
@@ -72,7 +73,9 @@ fun EditorScreen(m: AppModel) {
             Spacer(Modifier.width(16.dp))
             LazyColumn(Modifier.weight(1f).fillMaxHeight()) {
                 if (g != null && chans.isEmpty()) item { Text("No channels in this group. Add channels from their own group (OK > Add to one of my groups).", color = TextDim, fontSize = 14.sp, modifier = Modifier.padding(10.dp)) }
-                items(chans) { c ->
+                // keyed when the keys are unique: a moved channel keeps the focus
+                val uniq = chans.size == chans.distinctBy { it.key }.size
+                items(chans, key = if (uniq) ({ c: Channel -> c.key }) else null) { c ->
                     val hidden = c.key in p.hiddenCh
                     val name = p.names[c.key]
                     Row(Modifier.fillMaxWidth().padding(1.dp).tvFocus { channelActions(m, c, g, hidden) }.padding(10.dp), verticalAlignment = Alignment.CenterVertically) {

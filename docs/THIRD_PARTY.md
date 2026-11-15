@@ -24,6 +24,8 @@ Legend: **OK** = permissive / Apache-compatible, nothing to do beyond keeping no
 | jcifs-ng (SMB network share for recordings) | 2.1.10 | LGPL-2.1 | Note 1 |
 | Bouncy Castle bcprov (via jcifs-ng) | 1.76 | MIT-style (Bouncy Castle License) | OK |
 | SLF4J API (via jcifs-ng) | 1.7.36 | MIT | OK |
+| JNA (calls the Rust core from the UniFFI-generated Kotlin; `libjnidispatch.so`) | 5.15.0 | Apache-2.0 or LGPL-2.1 (dual; used under Apache-2.0) | OK |
+| tvBro Rust core `libtvbro_ffi.so` (`core/`, built from source) with its crates: UniFFI (MPL-2.0, unmodified), RustCrypto, rusqlite + bundled SQLite (public domain), serde, quick-xml, regex, url, ... | see `core/Cargo.lock` | Apache-2.0 / MIT / BSD-3-Clause / Zlib / Unicode-3.0 / MPL-2.0 (checked by `cargo deny`, `core/deny.toml`) | OK |
 | Test only: JUnit 4 | 4.13.2 | EPL-1.0 | OK (not shipped) |
 | Test only: kXML2 | 2.3.0 | BSD-style | OK (not shipped) |
 | Test only: sqlite-jdbc | 3.46.1.3 | Apache-2.0 (SQLite: public domain) | OK (not shipped) |

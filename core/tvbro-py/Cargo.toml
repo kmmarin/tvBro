@@ -1,0 +1,20 @@
+[package]
+name = "tvbro-py"
+description = "Python extension (PyO3) of tvbro-core for the web server"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish = false
+
+[lib]
+# the import name is tvbro_core (module tvbro_core.pyd / tvbro_core.abi3.so)
+name = "tvbro_core"
+crate-type = ["cdylib"]
+
+[dependencies]
+# renamed: inside this crate `tvbro_core` is the Python module function
+tvbro = { package = "tvbro-core", path = "../tvbro-core" }
+# abi3: one build serves CPython 3.11+ (Debian 12 ships 3.11)
+pyo3 = { version = "0.30.1", features = ["extension-module", "abi3-py311", "generate-import-lib"] }
