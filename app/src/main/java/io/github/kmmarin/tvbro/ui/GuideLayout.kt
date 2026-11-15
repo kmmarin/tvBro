@@ -4,7 +4,7 @@ package io.github.kmmarin.tvbro.ui
 
 /** One shared time scale for the guide ruler, programme blocks and the "now" line. All times are epoch seconds. */
 object GuideLayout {
-    const val WINDOW_MIN = 150
+    const val WINDOW_MIN = 180 // 3 h visible
     private const val WINDOW_SEC = WINDOW_MIN * 60L
 
     fun floor30(t: Long): Long = Math.floorDiv(t, 1800L) * 1800L

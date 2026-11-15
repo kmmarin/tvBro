@@ -1,0 +1,28 @@
+[package]
+name = "tvbro-ffi"
+description = "UniFFI bindings of tvbro-core for Kotlin (Android and the JVM desktop app)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish = false
+
+[lib]
+name = "tvbro_ffi"
+crate-type = ["cdylib", "lib"]
+
+# The code generator is a host-only dev tool; keeping it behind a feature keeps uniffi_bindgen (and its build-time
+# dependencies) out of the shipped library: `cargo run -p tvbro-ffi --features bindgen --bin uniffi-bindgen -- ...`
+[[bin]]
+name = "uniffi-bindgen"
+path = "src/bin/uniffi-bindgen.rs"
+required-features = ["bindgen"]
+
+[features]
+bindgen = ["uniffi/cli"]
+
+[dependencies]
+thiserror = "2.0.21"
+tvbro-core = { path = "../tvbro-core" }
+uniffi = "0.32.2"

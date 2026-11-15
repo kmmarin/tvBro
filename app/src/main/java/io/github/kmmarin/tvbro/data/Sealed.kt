@@ -164,6 +164,8 @@ class SealedDir(val dir: File, private val key: () -> ByteArray) {
     fun input(f: File): InputStream { val k = key(); return SealedInputStream(f.inputStream().buffered(64 * 1024), k) }
     fun output(f: File): OutputStream { val k = key(); return SealedOutputStream(f.outputStream(), k) }
     fun readText(f: File): String = input(f).use { String(it.readBytes(), Charsets.UTF_8) }
+    /** The text, or null when the file is damaged ([exists] checks the header only): it is deleted, to be fetched again. */
+    fun readTextOrDrop(f: File): String? = try { readText(f) } catch (e: SafeIOException) { f.delete(); Diag.log("cache file damaged (${e.message}), dropped"); null }
     fun writeText(f: File, s: String) { output(f).use { it.write(s.toByteArray(Charsets.UTF_8)) } }
     fun head(f: File, n: Int = 4096): String = try { input(f).use { val b = ByteArray(n); var k = 0; while (k < n) { val r = it.read(b, k, n - k); if (r < 0) break; k += r }; String(b, 0, k, Charsets.UTF_8) } } catch (e: IOException) { "" }
 

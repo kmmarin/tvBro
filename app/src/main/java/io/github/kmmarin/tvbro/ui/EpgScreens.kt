@@ -27,40 +27,31 @@ import io.github.kmmarin.tvbro.data.CatchupUrl
 import io.github.kmmarin.tvbro.data.Programme
 import io.github.kmmarin.tvbro.data.Reminders
 
-/** Popup with programme details and actions; shown over any screen while [AppModel.progMenu] is set. */
+/** Programme details and actions in the app's one pop-up; shown over any screen while [AppModel.progMenu] is set. */
 @Composable
 fun ProgMenu(m: AppModel) {
     val (ch, p) = m.progMenu ?: return
     if (p == null) { m.progMenu = null; return }
-    BackHandler { m.progMenu = null }
-    RestoreFocusOnClose(ch to p) { m.menu != null || m.prompt != null || m.progMenu != null }
     val now = System.currentTimeMillis() / 1000
-    val fr = remember { FocusRequester() }
-    LaunchedEffect(Unit) { delay(100); runCatching { fr.requestFocus() } }
-    Box(Modifier.fillMaxSize().background(Color(0xCC000000)), contentAlignment = Alignment.Center) {
-        Column(Modifier.width(560.dp).heightIn(max = 520.dp).focusTrap().background(Surface).verticalScroll(androidx.compose.foundation.rememberScrollState()).padding(24.dp)) {
-            Text(p.title, color = TextMain, fontSize = 22.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
-            io.github.kmmarin.tvbro.data.EpisodeNum.line(p.ep, p.sub)?.let { Text(it, color = TextMain, fontSize = 15.sp, maxLines = 1, overflow = TextOverflow.Ellipsis) }
-            Text("${ch.name}   ${hhmm(p.start)}-${hhmm(p.stop)}", color = Accent, fontSize = 15.sp, modifier = Modifier.padding(vertical = 4.dp))
-            Text(p.desc ?: "No description.", color = TextDim, fontSize = 14.sp, maxLines = 6, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(bottom = 12.dp))
-            val first = Modifier.focusRequester(fr)
-            var used = false
-            fun mod(): Modifier { val r = if (used) Modifier else first; used = true; return r }
-            if (p.start <= now && p.stop > now) TvButton("Watch live", mod().fillMaxWidth()) { m.progMenu = null; m.play(ch) }
-            if (p.stop <= now && CatchupUrl.supports(ch, p.start, now)) TvButton("Watch catch-up", mod().fillMaxWidth()) { m.progMenu = null; m.guidePlay(ch, p) }
-            if (p.stop > now) TvButton("Record", mod().fillMaxWidth()) { m.progMenu = null; m.recordProgramme(ch, p) }
-            if (p.start > now) TvButton("Remind me at start", mod().fillMaxWidth()) { m.progMenu = null; m.remind(ch, p) }
-            val rule = m.seriesRuleFor(ch, p)
-            if (rule != null) TvButton("Cancel series recording (every \"${rule.title}\")", mod().fillMaxWidth()) { m.progMenu = null; m.cancelSeries(rule) }
-            else TvButton("Record series (every \"${p.title}\" on ${ch.name})", mod().fillMaxWidth()) { m.progMenu = null; m.recordSeries(ch, p) }
-            if (p.start > now || p.stop <= now) TvButton("Watch ${ch.name} now", mod().fillMaxWidth()) { m.progMenu = null; m.play(ch) }
-            TvButton(if (ch.key in m.favourites) "Remove ${ch.name} from Favourites" else "Add ${ch.name} to Favourites", mod().fillMaxWidth()) { m.toggleFav(ch) }
-            TvButton("Channel options (rename, hide, move)...", mod().fillMaxWidth()) { m.progMenu = null; m.openChannelMenu(ch) }
-            TvButton("Close", mod().fillMaxWidth()) { m.progMenu = null }
-        }
+    val fr = remember(ch to p) { FocusRequester() }
+    Popup(ch to p, p.title, { m.progMenu = null }, m, focus = fr) {
+        io.github.kmmarin.tvbro.data.EpisodeNum.line(p.ep, p.sub)?.let { Text(it, color = TextMain, fontSize = 15.sp, maxLines = 1, overflow = TextOverflow.Ellipsis) }
+        Text("${ch.name}   ${hhmm(p.start)}-${hhmm(p.stop)}", color = TextMain, fontSize = 15.sp, modifier = Modifier.padding(vertical = 4.dp))
+        Text(p.desc ?: "No description.", color = TextDim, fontSize = 14.sp, maxLines = 6, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(bottom = 12.dp))
+        var used = false
+        fun first(): FocusRequester? = if (used) null else { used = true; fr }
+        if (p.start <= now && p.stop > now) PopupItem("Watch live", first()) { m.progMenu = null; m.play(ch) }
+        if (p.stop <= now && CatchupUrl.supports(ch, p.start, now)) PopupItem("Watch catch-up", first()) { m.progMenu = null; m.guidePlay(ch, p) }
+        if (p.stop > now) PopupItem("Record", first()) { m.progMenu = null; m.recordProgramme(ch, p) }
+        if (p.start > now) PopupItem("Remind me at start", first()) { m.progMenu = null; m.remind(ch, p) }
+        val rule = m.seriesRuleFor(ch, p)
+        if (rule != null) PopupItem("Cancel series recording (every \"${rule.title}\")", first()) { m.progMenu = null; m.cancelSeries(rule) }
+        else PopupItem("Record series (every \"${p.title}\" on ${ch.name})", first()) { m.progMenu = null; m.recordSeries(ch, p) }
+        if (p.start > now || p.stop <= now) PopupItem("Watch ${ch.name} now", first()) { m.progMenu = null; m.play(ch) }
+        PopupItem(if (ch.key in m.favourites) "Remove ${ch.name} from Favourites" else "Add ${ch.name} to Favourites", first()) { m.toggleFav(ch) }
+        PopupItem("Channel options (rename, hide, move)...", first()) { m.progMenu = null; m.openChannelMenu(ch) }
     }
 }
-
 @Composable
 fun MappingScreen(m: AppModel) {
     BackHandler { m.screen = Screen.SETTINGS }
@@ -72,7 +63,7 @@ fun MappingScreen(m: AppModel) {
     }
     val ids = remember(sel) { sel?.let { m.epgIds(it.sourceId) } ?: emptyList() }
     LazyColumn(Modifier.fillMaxSize().background(Bg).padding(32.dp)) {
-        item { Text("Map channels to guide", color = Accent, fontSize = 28.sp) }
+        item { SectionTitle("Map channels to guide") }
         val s = sel
         if (s == null) {
             item { Text("Channels without guide data. OK to pick one.", color = TextDim, fontSize = 14.sp, modifier = Modifier.padding(vertical = 6.dp)) }

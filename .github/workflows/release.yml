@@ -1,7 +1,8 @@
 # Copyright 2026 The tvBro authors
 # SPDX-License-Identifier: Apache-2.0
 # Builds and publishes a GitHub Release for a version tag vX.Y.Z that is on main:
-#   tvbro-X.Y.Z.apk + tvbro.apk (signed universal APK, same file), tvbro-windows-x64.zip,
+#   tvbro-X.Y.Z.apk + tvbro.apk (signed universal APK, same file), abi-<abi>-X.Y.Z.apk (one per ABI: arm64-v8a,
+#   armeabi-v7a, x86_64; the in-app updater picks the device's), tvbro-windows-x64.zip,
 #   tvbro-linux-arm64.tar.gz, SHA256SUMS.txt.
 # Nothing is built or published unless the whole CI workflow (tests and security scans) passes for the tag.
 # Signing uses repository secrets: TVBRO_KEYSTORE_BASE64, TVBRO_KEYSTORE_PASSWORD, TVBRO_KEY_ALIAS, TVBRO_KEY_PASSWORD.
@@ -48,6 +49,11 @@ jobs:
           distribution: temurin
           java-version: "17"
       - uses: gradle/actions/setup-gradle@v4
+      # the app ships the Rust core (core/): cargo builds libtvbro_ffi.so for three ABIs with the SDK's NDK
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android,armv7-linux-androideabi,x86_64-linux-android
+      - run: yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "ndk;27.3.13750724" > /dev/null
       - name: Keystore from secrets
         env:
           KS: ${{ secrets.TVBRO_KEYSTORE_BASE64 }}
@@ -67,9 +73,15 @@ jobs:
       - name: Verify signature and collect
         run: |
           v=${{ needs.check.outputs.version }}
-          apk=app/build/outputs/apk/release/app-release.apk
+          out=app/build/outputs/apk/release
+          apk=$out/app-universal-release.apk
           "$ANDROID_HOME"/build-tools/34.0.0/apksigner verify --print-certs "$apk"
           mkdir -p dist && cp "$apk" "dist/tvbro-$v.apk" && cp "$apk" dist/tvbro.apk
+          # per-ABI APKs: named without "tvbro" so updaters older than the splits keep choosing the universal APK
+          for abi in arm64-v8a armeabi-v7a x86_64; do
+            "$ANDROID_HOME"/build-tools/34.0.0/apksigner verify "$out/app-$abi-release.apk"
+            cp "$out/app-$abi-release.apk" "dist/abi-$abi-$v.apk"
+          done
           rm -f "$RUNNER_TEMP/tvbro-release.jks"
       - uses: actions/upload-artifact@v4
         with:

@@ -35,6 +35,7 @@ import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.layout
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
@@ -61,22 +62,24 @@ import kotlinx.coroutines.launch
 fun HomeScreen(m: AppModel) {
     val railSel = remember { SafeFocus() }
     DisposableEffect(railSel) { m.railSel = railSel; onDispose { if (m.railSel === railSel) m.railSel = null } }
-    var railFocused by remember { mutableStateOf(false) }
-    // Back: from another section to the TV screen; on the TV screen to the side menu; from the side menu it leaves
-    // the app (the TV screen is home). Screens and layers above handle Back first.
-    // (off while a menu, dialog or programme pop-up is open: Back closes that and focus returns to the item)
-    BackHandler(enabled = m.screen == Screen.LIST && m.menu == null && m.prompt == null && m.progMenu == null &&
-        (m.section != Section.TV || !railFocused)) {
-        if (m.section != Section.TV) m.section = Section.TV else railSel.request()
-    }
+    // (read only by HomeBack: entering or leaving the side menu must not recompose the whole section)
+    val railFocused = remember { mutableStateOf(false) }
+    HomeBack(m, railSel, railFocused)
     Box(Modifier.fillMaxSize().background(Bg)) {
         Row(Modifier.fillMaxSize()) {
             Spacer(Modifier.width(64.dp))
             // no focusRestorer here: its enter redirect swallowed requestFocus() between the section's own columns (Right
             // from the TV groups did nothing); Right from the side menu returns to the remembered item explicitly
             Box(Modifier.weight(1f).fillMaxHeight()) {
+                // Leaving the TV screen: the next section's first frame comes first and the guide is taken down two
+                // frames later (disposing it in the same frame made Movies open in ~310 ms). Meanwhile the guide is
+                // neither measured, drawn nor focusable.
+                val onTv = m.section == Section.TV
+                var tvKept by remember { mutableStateOf(false) }
+                LaunchedEffect(onTv) { if (onTv) tvKept = true else if (tvKept) { withFrameNanos { }; withFrameNanos { }; tvKept = false } }
+                if (onTv || tvKept) Box(if (onTv) Modifier.fillMaxSize() else Modifier.parked()) { TvSection(m) }
                 when (m.section) {
-                    Section.TV -> TvSection(m)
+                    Section.TV -> {}
                     Section.SEARCH -> SearchScreen(m) { m.section = Section.TV }
                     Section.MOVIES, Section.SHOWS -> BrowseScreen(m)
                     Section.RECORDINGS -> RecordingsScreen(m)
@@ -84,8 +87,28 @@ fun HomeScreen(m: AppModel) {
                 }
             }
         }
-        NavRail(m, railSel) { railFocused = it }
+        NavRail(m, railSel) { railFocused.value = it }
         if (m.screen == Screen.SETTINGS) SettingsScreen(m)
+    }
+}
+
+/** Kept composed but not measured, placed or drawn, and not entered by focus search (a section on its way out). */
+@OptIn(androidx.compose.ui.ExperimentalComposeUiApi::class)
+private fun Modifier.parked(): Modifier = this
+    .focusProperties { enter = { FocusRequester.Cancel } }.focusGroup()
+    .layout { _, _ -> layout(0, 0) {} }
+
+/**
+ * Back: from another section to the TV screen; on the TV screen the guide back to now, then the groups, then the side
+ * menu; from the side menu it leaves the app
+ * (the TV screen is home). Screens and layers above handle Back first.
+ * (off while a menu, dialog or programme pop-up is open: Back closes that and focus returns to the item)
+ */
+@Composable
+private fun HomeBack(m: AppModel, railSel: SafeFocus, railFocused: State<Boolean>) {
+    BackHandler(enabled = m.screen == Screen.LIST && m.menu == null && m.prompt == null && m.progMenu == null &&
+        (m.section != Section.TV || !railFocused.value)) {
+        if (m.section != Section.TV) m.section = Section.TV else if (m.tvBack?.invoke() != true) railSel.request()
     }
 }
 
@@ -105,15 +128,31 @@ private fun RailItem(icon: Int, label: String, selected: Boolean, expanded: Bool
     }
 }
 
+private val railBounce = android.os.Handler(android.os.Looper.getMainLooper())
+
 /** Icons only while browsing; expands with labels over the content while it holds focus (content does not re-layout). */
 @Composable
 fun NavRail(m: AppModel, sel: SafeFocus, onFocus: (Boolean) -> Unit) {
     var expanded by remember { mutableStateOf(false) }
-    val w by animateDpAsState(if (expanded) 210.dp else 64.dp, label = "rail")
+    val w = animateDpAsState(if (expanded) 210.dp else 64.dp, label = "rail")
     Column(
         // entered at the current section's icon (Left from anywhere in the content), not the nearest icon
-        Modifier.fillMaxHeight().width(w).background(if (expanded) Color(0xFF10151C) else Bg)
-            .onFocusChanged { expanded = it.hasFocus; onFocus(it.hasFocus) }.enterAt(sel).padding(vertical = 16.dp),
+        // (the width is read at layout time: the slide re-lays out the rail without recomposing it every frame)
+        Modifier.fillMaxHeight().layout { mm, c ->
+            val px = w.value.roundToPx().coerceIn(c.minWidth, c.maxWidth)
+            val p = mm.measure(c.copy(minWidth = px, maxWidth = px))
+            layout(px, p.height) { p.place(0, 0) }
+        }.background(if (expanded) Color(0xFF10151C) else Bg)
+            .onFocusChanged {
+                // focus that fell here by itself (no Left / Back) goes straight back to the content
+                // (checked once the change is applied: focus can move here while the focused item is being removed)
+                if (it.hasFocus && !expanded && m.screen == Screen.LIST) railBounce.post {
+                    if (!expanded || FocusMemory.railEntryOk()) return@post
+                    if (Lat.enabled) android.util.Log.i("tvbro-lat", "side menu: focus returned to the content")
+                    FocusMemory.contentBack?.invoke() == true || FocusMemory.restoreContent() || m.railRight?.request() == true
+                }
+                expanded = it.hasFocus; onFocus(it.hasFocus)
+            }.enterAt(sel).padding(vertical = 16.dp),
     ) { CompositionLocalProvider(LocalInRail provides true) {
         val s = m.section
         // Right goes back to where the user was: the item Left (or Back) came from, a group as well as a channel (user
@@ -121,7 +160,7 @@ fun NavRail(m: AppModel, sel: SafeFocus, onFocus: (Boolean) -> Unit) {
         // screen's focused channel. Never to whatever sits next to the icon (false: normal focus search, e.g. a section
         // that remembers nothing yet)
         val right = { FocusMemory.restoreContent() || m.railRight?.request() == true }
-        RailItem(R.drawable.ic_nav_search, "Search", s == Section.SEARCH, expanded, right, sel) { m.section = Section.SEARCH }
+        RailItem(R.drawable.ic_nav_search, "Search", s == Section.SEARCH, expanded, right, sel) { m.searchKeyboard = true; m.section = Section.SEARCH }
         RailItem(R.drawable.ic_nav_tv, "TV", s == Section.TV, expanded, right, sel) { m.section = Section.TV }
         RailItem(R.drawable.ic_nav_movie, "Movies", s == Section.MOVIES, expanded, right, sel) { m.openVod(false) }
         RailItem(R.drawable.ic_nav_shows, "Shows", s == Section.SHOWS, expanded, right, sel) { m.openVod(true) }
@@ -145,26 +184,28 @@ fun Card(m: AppModel, width: Dp, fav: (() -> Unit)?, onFocus: () -> Unit = {}, l
     Column(
         mod.width(width).padding(4.dp)
             .onFocusChanged { f = it.isFocused; if (it.isFocused) { m.favAction = fav; onFocus() } }
-            .scale(if (f) 1.05f else 1f)
+            .focusGrow(f)
             .tvFocus(onLongClick = long, onClick = click).padding(5.dp),
         content = content,
     )
 }
 
+/** The app's one progress line (cards, TV screen header, player banner, quick-access tiles). */
 @Composable
-fun ProgressLine(f: Float, modifier: Modifier = Modifier) {
-    Box(modifier.fillMaxWidth().height(4.dp).background(Color(0xFF2A3240))) { Box(Modifier.fillMaxWidth(f.coerceIn(0f, 1f)).height(4.dp).background(Accent)) }
+fun ProgressLine(f: Float, modifier: Modifier = Modifier, color: Color = Accent) {
+    Box(modifier.fillMaxWidth().height(4.dp).background(Color(0x40FFFFFF))) { Box(Modifier.fillMaxWidth(f.coerceIn(0f, 1f)).height(4.dp).background(color)) }
 }
 
 /** Channel tile: logo, name and what is on now with a progress line. */
 @Composable
-fun ChannelTile(m: AppModel, c: io.github.kmmarin.tvbro.data.Channel, now: Long, fav: (() -> Unit)? = { m.toggleFav(c) }, onFocus: () -> Unit = {}) {
+fun ChannelTile(m: AppModel, c: io.github.kmmarin.tvbro.data.Channel, now: Long, fav: (() -> Unit)? = { m.toggleFav(c) }, onFocus: () -> Unit = {}, compact: Boolean = false) {
     val cur = m.epg.nowNext(c, now).first
-    Card(m, 210.dp, fav, onFocus, long = { m.openChannelMenu(c) }, click = { m.play(c) }) {
-        Box(Modifier.fillMaxWidth().height(96.dp).clip(RoundedCornerShape(6.dp)).background(Surface), contentAlignment = Alignment.Center) {
-            Logo(c.logo, c.name, 64.dp)
+    // compact (search results): TiviMate's size, seven to a row instead of four
+    Card(m, if (compact) 124.dp else 210.dp, fav, onFocus, long = { m.openChannelMenu(c) }, click = { m.play(c) }) {
+        Box(Modifier.fillMaxWidth().height(if (compact) 46.dp else 96.dp).clip(RoundedCornerShape(6.dp)).background(Surface), contentAlignment = Alignment.Center) {
+            Logo(c.logo, c.name, if (compact) 36.dp else 64.dp)
             if (c.key in m.favourites) Badge("*", Modifier.align(Alignment.TopStart).padding(4.dp))
-            Text(c.number.toString(), color = TextDim, fontSize = 12.sp, modifier = Modifier.align(Alignment.TopEnd).padding(6.dp))
+            if (!compact) Text(c.number.toString(), color = TextDim, fontSize = 12.sp, modifier = Modifier.align(Alignment.TopEnd).padding(6.dp))
         }
         Text(c.name, color = TextMain, fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 4.dp))
         Text(cur?.title ?: "No guide data", color = TextDim, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
@@ -197,7 +238,7 @@ fun MyListScreen(m: AppModel) {
     val cont = m.histSnaps.filter { if (it.kind == "series") it.key in shows else !m.isWatched(it.key) } +
         showList.map { it.first }.filter { s -> m.histSnaps.none { it.key == s.key } }
     LazyColumn(Modifier.fillMaxSize().padding(horizontal = 20.dp, vertical = 16.dp)) {
-        item { Text("My list", color = Accent, fontSize = 28.sp) }
+        item { SectionTitle("My list") }
         item { Text("Add anything with long-press OK, the yellow or bookmark key, or gamepad Y.", color = TextDim, fontSize = 13.sp) }
         if (cont.isNotEmpty()) item {
             MyRow("Continue watching", cont.size) {
@@ -216,9 +257,9 @@ fun MyListScreen(m: AppModel) {
                 }
             }
         }
-        if (favCh.isNotEmpty()) item { MyRow("Channels", favCh.size) { items(favCh) { c -> ChannelTile(m, c, now) } } }
-        if (movies.isNotEmpty()) item { MyRow("Movies", movies.size) { items(movies) { v -> PosterTile(m, v, Modifier) } } }
-        if (series.isNotEmpty()) item { MyRow("Shows", series.size) { items(series) { v -> PosterTile(m, v, Modifier) } } }
+        if (favCh.isNotEmpty()) item(key = "ch") { MyRow("Channels", favCh.size) { items(favCh) { c -> ChannelTile(m, c, now) } } }
+        if (movies.isNotEmpty()) item(key = "mv") { MyRow("Movies", movies.size) { items(movies, key = { it.key }) { v -> PosterTile(m, v, Modifier) } } }
+        if (series.isNotEmpty()) item(key = "sr") { MyRow("Shows", series.size) { items(series, key = { it.key }) { v -> PosterTile(m, v, Modifier) } } }
         if (reminders.isNotEmpty()) item {
             MyRow("Programmes and reminders", reminders.size) {
                 items(reminders, key = { it.id }) { r ->
@@ -272,7 +313,9 @@ fun MyListScreen(m: AppModel) {
 
 @Composable
 fun Backdrop(url: String?, modifier: Modifier = Modifier) {
-    val bmp by produceState<Bitmap?>(null, url) { value = if (url != null) Logos.load(url, 960) else null }
+    // (the previous picture stays until the next one is ready; a short pause first, so moving along a row does not
+    // decode a large picture for every title passed)
+    val bmp by produceState(Logos.peek(url, 960), url) { value = if (url == null) null else Logos.peek(url, 960) ?: run { delay(250); Logos.load(url, 960) } }
     Box(modifier) {
         bmp?.let { Image(it.asImageBitmap(), null, Modifier.fillMaxSize(), contentScale = ContentScale.Crop, alpha = 0.9f) }
         Box(Modifier.matchParentSize().background(Brush.horizontalGradient(listOf(Bg, Bg.copy(alpha = 0.88f), Color.Transparent))))
@@ -282,7 +325,8 @@ fun Backdrop(url: String?, modifier: Modifier = Modifier) {
 
 @Composable
 fun Poster(url: String?, name: String, w: Dp, h: Dp) {
-    val bmp by produceState<Bitmap?>(null, url) { value = if (url != null) Logos.load(url, 200) else null }
+    // in memory already: shown in the first frame (scrolling back, reopening a screen)
+    val bmp by produceState(Logos.peek(url, 200), url) { value = Logos.peek(url, 200) ?: if (url != null) Logos.load(url, 200) else null }
     Box(Modifier.size(w, h).clip(RoundedCornerShape(6.dp)).background(Surface), contentAlignment = Alignment.Center) {
         val b = bmp
         if (b != null) Image(b.asImageBitmap(), null, Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
@@ -354,7 +398,7 @@ fun PosterTile(m: AppModel, item: VodItem, mod: Modifier) {
     Column(
         mod.width(130.dp).padding(4.dp)
             .onFocusChanged { f = it.isFocused; if (it.isFocused) { m.peekVod(item); m.favAction = { m.toggleFavKey(item) } } }
-            .scale(if (f) 1.06f else 1f)
+            .focusGrow(f)
             .tvFocus(onLongClick = { vodMenu(m, item) }) { m.openDetail(item) }.padding(5.dp),
     ) {
         Box {
@@ -380,22 +424,32 @@ fun BrowseScreen(m: AppModel) {
     val rev = m.watch.rev.intValue
     val cont = remember(rev, shows) { if (shows) m.continueShows() else emptyList() }
     // The title the user was on (back from its page, or Right from the categories) keeps focus; else the first one.
-    val lastKey = m.focusVod?.key
-    val gridKey = items.firstOrNull { it.key == lastKey }?.key ?: items.firstOrNull()?.key
-    val contKey = cont.firstOrNull { it.first.key == lastKey }?.first?.key ?: cont.firstOrNull()?.first?.key
-    val lastInCont = cont.any { it.first.key == lastKey } && items.none { it.key == lastKey }
+    // Derived states, read only by the tiles they concern, effects and focus lambdas: a focus move recomposed the
+    // whole screen (every visible poster) when this read m.focusVod directly.
+    val gridKeyS = remember(items) { derivedStateOf { val k = m.focusVod?.key; items.firstOrNull { it.key == k }?.key ?: items.firstOrNull()?.key } }
+    val contKeyS = remember(cont) { derivedStateOf { val k = m.focusVod?.key; cont.firstOrNull { it.first.key == k }?.first?.key ?: cont.firstOrNull()?.first?.key } }
+    val lastInContS = remember(items, cont) { derivedStateOf { val k = m.focusVod?.key; cont.any { it.first.key == k } && items.none { it.key == k } } }
     // From the categories, Right lands on "Continue watching" for My list / History (or when the user was there),
     // otherwise on the category's titles.
     val rightTarget = {
-        if (contFr.attachedNow && (lastInCont || m.vodCat == CAT_MYLIST || m.vodCat == CAT_RECENT || !gridFr.attachedNow)) contFr.target() else gridFr.target()
+        if (contFr.attachedNow && (lastInContS.value || m.vodCat == CAT_MYLIST || m.vodCat == CAT_RECENT || !gridFr.attachedNow)) contFr.target() else gridFr.target()
     }
     val gridState = androidx.compose.foundation.lazy.grid.rememberLazyGridState(m.vodScroll.first, m.vodScroll.second)
-    DisposableEffect(Unit) { onDispose { m.vodScroll = gridState.firstVisibleItemIndex to gridState.firstVisibleItemScrollOffset } }
+    DisposableEffect(Unit) { onDispose { m.vodScroll = gridState.firstVisibleItemIndex to gridState.firstVisibleItemScrollOffset; m.store.setVodScroll(m.vodSeries, m.vodScroll) } }
+    // the remembered place, once the category's first titles are there (the grid had nothing to scroll in before)
+    val placed = remember(m.vodCat, shows) { booleanArrayOf(false) }
+    LaunchedEffect(m.vodCat, shows, items.isNotEmpty()) {
+        if (placed[0] || items.isEmpty()) return@LaunchedEffect
+        placed[0] = true
+        val (i, o) = m.vodScroll
+        if (i > 0 && gridState.firstVisibleItemIndex == 0) runCatching { gridState.scrollToItem(i.coerceAtMost(items.size - 1), o) }
+    }
     // Entering the section (or coming back from a title's page): focus on the remembered title, else the category.
     LaunchedEffect(shows) {
         delay(150)
+        val gridKey = gridKeyS.value; val lastInCont = lastInContS.value
         val gi = items.indexOfFirst { it.key == gridKey }
-        if (!shows && gi >= 0 && gridState.layoutInfo.visibleItemsInfo.none { it.index == gi }) gridState.scrollToItem(gi)
+        if (!shows && gi >= 0 && gridState.layoutInfo.visibleItemsInfo.none { it.index == gi }) gridState.reveal(gi)
         repeat(20) { if ((if (lastInCont) contFr.request() else false) || gridFr.request() || contFr.request()) return@LaunchedEffect; delay(50) }
         catSel.request()
     }
@@ -412,7 +466,7 @@ fun BrowseScreen(m: AppModel) {
     var jobCat by remember { mutableStateOf("") }
     Row(Modifier.fillMaxSize()) {
         LazyColumn(Modifier.width(210.dp).fillMaxHeight().padding(12.dp).enterAt(catSel)) {
-            item { Text(if (shows) "Shows" else "Movies", color = Accent, fontSize = 24.sp, modifier = Modifier.padding(bottom = 8.dp)) }
+            item { SectionTitle(if (shows) "Shows" else "Movies", Modifier.padding(bottom = 8.dp)) }
             item { TvField("Search", m.vodQuery, { m.vodQuery = it }) }
             items(cats) { g ->
                 val sel = g == m.vodCat
@@ -439,10 +493,7 @@ fun BrowseScreen(m: AppModel) {
             }
         }
         Column(Modifier.weight(1f).fillMaxHeight()) {
-            Box(Modifier.fillMaxWidth().height(200.dp)) {
-                Backdrop(m.peek?.backdrop ?: m.focusVod?.poster, Modifier.fillMaxSize())
-                VodHeader(m.focusVod, m.peek, Modifier.padding(start = 16.dp, top = 12.dp, end = 16.dp))
-            }
+            BrowseHeader(m)
             if (m.vodMsg.isNotEmpty()) Text(m.vodMsg, color = TextDim, fontSize = 14.sp, modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp))
             if (shows) {
                 // Rows: "Continue watching" first, then the selected category.
@@ -452,7 +503,8 @@ fun BrowseScreen(m: AppModel) {
                             Text("Continue watching", color = TextMain, fontSize = 17.sp, modifier = Modifier.padding(start = 14.dp, top = 4.dp))
                             LazyRow(Modifier.fillMaxWidth().padding(horizontal = 8.dp)) {
                                 itemsIndexed(cont, key = { _, p -> p.first.key }) { i, (v, r) ->
-                                    ContinueShowCard(m, v, r, Modifier.safeFocus(if (v.key == contKey) contFr else null))
+                                    val target by remember(v.key, contKeyS) { derivedStateOf { v.key == contKeyS.value } }
+                                    ContinueShowCard(m, v, r, Modifier.safeFocus(if (target) contFr else null))
                                 }
                             }
                         }
@@ -460,25 +512,37 @@ fun BrowseScreen(m: AppModel) {
                     item(key = "cat") {
                         Column {
                             if (cont.isNotEmpty()) Text(vodCatLabel(m.vodCat, true), color = TextMain, fontSize = 17.sp, modifier = Modifier.padding(start = 14.dp, top = 6.dp))
-                            val rowState = rememberLazyListState((items.indexOfFirst { it.key == gridKey } - 2).coerceAtLeast(0))
+                            val first = remember { androidx.compose.runtime.snapshots.Snapshot.withoutReadObservation { FocusScroll.first(items.indexOfFirst { it.key == gridKeyS.value }.coerceAtLeast(0), 2, 6) } }
+                            val rowState = rememberLazyListState(first)
                             LazyRow(Modifier.fillMaxWidth().padding(horizontal = 8.dp), state = rowState) {
-                                itemsIndexed(items) { i, v ->
-                                    if (i >= items.size - 40 && m.vodHasMore) LaunchedEffect(items.size) { m.vodMore() } // next page from the stored catalogue
-                                    PosterTile(m, v, Modifier.safeFocus(if (v.key == gridKey) gridFr else null))
-                                }
+                                itemsIndexed(items, contentType = { _, _ -> "title" }) { i, v -> BrowseTile(m, items, i, v, gridKeyS, gridFr) }
                             }
                         }
                     }
                 }
             } else {
                 LazyVerticalGrid(GridCells.Adaptive(130.dp), Modifier.fillMaxWidth().weight(1f).padding(horizontal = 8.dp), state = gridState) {
-                    itemsIndexed(items) { i, v ->
-                        if (i >= items.size - 40 && m.vodHasMore) LaunchedEffect(items.size) { m.vodMore() } // next page from the stored catalogue
-                        PosterTile(m, v, Modifier.safeFocus(if (v.key == gridKey) gridFr else null))
-                    }
+                    itemsIndexed(items, contentType = { _, _ -> "title" }) { i, v -> BrowseTile(m, items, i, v, gridKeyS, gridFr) }
                 }
             }
         }
+    }
+}
+
+/** One title of the Movies grid / Shows row: recomposes only when it becomes or stops being the remembered one. */
+@Composable
+private fun BrowseTile(m: AppModel, items: List<VodItem>, i: Int, v: VodItem, gridKey: State<String?>, gridFr: SafeFocus) {
+    if (i >= items.size - 40 && m.vodHasMore) LaunchedEffect(items.size) { m.vodMore() } // next page from the stored catalogue
+    val target by remember(v.key, gridKey) { derivedStateOf { v.key == gridKey.value } }
+    PosterTile(m, v, Modifier.safeFocus(if (target) gridFr else null))
+}
+
+/** Backdrop and details of the focused title (the only part of Movies / Shows that follows the focus). */
+@Composable
+private fun BrowseHeader(m: AppModel) {
+    Box(Modifier.fillMaxWidth().height(200.dp)) {
+        Backdrop(m.peek?.backdrop ?: m.focusVod?.poster, Modifier.fillMaxSize())
+        VodHeader(m.focusVod, m.peek, Modifier.padding(start = 16.dp, top = 12.dp, end = 16.dp))
     }
 }
 
@@ -492,7 +556,7 @@ private fun EpisodeCard(m: AppModel, series: VodItem, e: Episode, rev: Int, mod:
     val durMs = (st?.durMs ?: 0L).takeIf { it > 0 } ?: VodFmt.seconds(e.duration) * 1000
     var f by remember { mutableStateOf(false) }
     Column(
-        mod.width(210.dp).onFocusChanged { f = it.isFocused; if (it.isFocused) { onFocus(); m.favAction = { m.toggleFavKey(series) } } }.scale(if (f) 1.05f else 1f)
+        mod.width(210.dp).onFocusChanged { f = it.isFocused; if (it.isFocused) { onFocus(); m.favAction = { m.toggleFavKey(series) } } }.focusGrow(f)
             .tvFocus(onLongClick = {
                 m.menu = MenuState("${Watch.code(e)} ${VodFmt.cleanTitle(series.name, e.title)}", listOf(
                     "Play" to { m.playEpisode(series, e) },
@@ -515,7 +579,8 @@ private fun EpisodeCard(m: AppModel, series: VodItem, e: Episode, rev: Int, mod:
 
 @Composable
 private fun SeasonRow(m: AppModel, series: VodItem, season: Int, eps: List<Episode>, rev: Int, target: Episode?, targetFr: FocusRequester) {
-    var idx by remember { mutableIntStateOf(0) }
+    // (read only by the counter: moving along the row must not recompose every episode card)
+    val idx = remember { mutableIntStateOf(0) }
     val all = remember(rev) { eps.all { m.watch.state(m.epKey(series, it))?.watched == true } }
     Column(Modifier.padding(top = 14.dp)) {
         Row(Modifier.fillMaxWidth().padding(end = 24.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -527,14 +592,17 @@ private fun SeasonRow(m: AppModel, series: VodItem, season: Int, eps: List<Episo
                     "Download season" to { m.downloadSeason(series, eps) },
                 ))
             }
-            Text("${idx + 1} / ${eps.size}", color = TextDim, fontSize = 14.sp)
+            EpisodeCounter(idx, eps.size)
         }
-        val state = rememberLazyListState(initialFirstVisibleItemIndex = eps.indexOfFirst { it.id == target?.id }.coerceAtLeast(0))
+        val state = rememberLazyListState(initialFirstVisibleItemIndex = FocusScroll.first(eps.indexOfFirst { it.id == target?.id }.coerceAtLeast(0), 0, 4))
         LazyRow(state = state) {
-            itemsIndexed(eps) { i, e -> EpisodeCard(m, series, e, rev, Modifier.requesterIf(e.id == target?.id, targetFr)) { idx = i } }
+            itemsIndexed(eps, contentType = { _, _ -> "ep" }) { i, e -> EpisodeCard(m, series, e, rev, Modifier.requesterIf(e.id == target?.id, targetFr)) { idx.intValue = i } }
         }
     }
 }
+
+@Composable
+private fun EpisodeCounter(idx: State<Int>, n: Int) = Text("${idx.value + 1} / $n", color = TextDim, fontSize = 14.sp)
 
 @OptIn(androidx.compose.ui.ExperimentalComposeUiApi::class)
 @Composable
@@ -562,30 +630,32 @@ fun DetailPage(m: AppModel) {
                 val st = remember(rev, tick, target) { if (series) target?.let { m.epState(item, it) } else m.watch.state(item.key) }
                 val pos = if (st?.inProgress == true) st.posMs else 0L
                 val left = VodFmt.seconds(info?.duration) - pos / 1000
-                val label = if (series) {
-                    target?.let { (if (pos > 0) "Resume " else "Play ") + Watch.code(it) + (if (pos > 0) " (${Watch.clock(pos)})" else "") } ?: "Play"
-                } else if (pos > 0) "Resume" + (if (left > 60) " (${VodFmt.fmt(left)} left)" else "") else "Play"
+                // name and value of the play button: "Resume S1 E9" / "1:07", "Resume" / "51m left", "Play"
+                val label = if (series) target?.let { (if (pos > 0) "Resume " else "Play ") + Watch.code(it) } ?: "Play" else if (pos > 0) "Resume" else "Play"
+                val labelValue = if (pos <= 0) "" else if (series) Watch.clock(pos) else if (left > 60) "${VodFmt.fmt(left)} left" else ""
                 val allWatched = series && info != null && info.episodes.isNotEmpty() && info.episodes.all { m.epState(item, it)?.watched == true }
                 // the ends of the button row are edges (Right from the last button jumped down to "Season options")
                 Row(Modifier.focusProperties {
                     exit = { d -> if (d == androidx.compose.ui.focus.FocusDirection.Left || d == androidx.compose.ui.focus.FocusDirection.Right) FocusRequester.Cancel else FocusRequester.Default }
-                }.focusGroup(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                    TvButton(label, Modifier.focusRequester(playFr)) { if (series) target?.let { m.playEpisode(item, it) } else m.playItem(item) }
-                    if (pos > 0) TvButton("Play from start") {
+                }.focusGroup(), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                    // icon buttons with labels, like the player overlay's icon row (the word buttons ran off the screen)
+                    ActionIcon(R.drawable.ic_pm_play, label, labelValue, circleMod = Modifier.focusRequester(playFr)) { if (series) target?.let { m.playEpisode(item, it) } else m.playItem(item) }
+                    if (pos > 0) ActionIcon(R.drawable.ic_pm_restart, "Play from start") {
                         if (series) target?.let { m.restartEpisode(item, it) }
                         else { m.store.setWatched(item.key, false); m.playItem(item) }
                     }
                     info?.trailer?.let { t ->
-                        TvButton("Trailer") {
+                        ActionIcon(R.drawable.ic_pm_trailer, "Trailer") {
                             try { ctx.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(t)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) }
                             catch (e: Exception) { m.toast("No app to open the trailer") }
                         }
                     }
-                    TvButton(if (item.key in m.favourites) "Remove from My list" else "Add to My list") { m.toggleFavKey(item) }
-                    if (series && info != null && info.episodes.isNotEmpty()) TvButton(if (allWatched) "Mark show unwatched" else "Mark show watched") { m.markEpisodes(item, info.episodes, !allWatched) }
-                    if (!series) TvButton(if (m.isWatched(item.key)) "Mark unwatched" else "Mark watched") { m.markWatched(item.key, !m.isWatched(item.key)); tick++ }
-                    if (!series) TvButton(if (DlRepo.has(item.key)) "Offline copy saved" else "Download") { m.downloadMovie(item) }
-                    TvButton("External player") { m.urlFor(item, target)?.let { m.openExternal(it) } }
+                    val fav = item.key in m.favourites
+                    ActionIcon(if (fav) R.drawable.ic_pm_fav_on else R.drawable.ic_pm_fav, if (fav) "Remove from My list" else "Add to My list", "My list") { m.toggleFavKey(item) }
+                    if (series && info != null && info.episodes.isNotEmpty()) ActionIcon(if (allWatched) R.drawable.ic_pm_undo else R.drawable.ic_pm_done, if (allWatched) "Mark show unwatched" else "Mark show watched", if (allWatched) "Watched" else "") { m.markEpisodes(item, info.episodes, !allWatched) }
+                    if (!series) { val w = m.isWatched(item.key); ActionIcon(if (w) R.drawable.ic_pm_undo else R.drawable.ic_pm_done, if (w) "Mark unwatched" else "Mark watched", if (w) "Watched" else "") { m.markWatched(item.key, !w); tick++ } }
+                    if (!series) { val d = DlRepo.has(item.key); ActionIcon(if (d) R.drawable.ic_pm_download_done else R.drawable.ic_pm_download, if (d) "Offline copy saved" else "Download", if (d) "Saved" else "") { m.downloadMovie(item) } }
+                    ActionIcon(R.drawable.ic_pm_open, "External player") { m.urlFor(item, target)?.let { m.openExternal(it) } }
                 }
             }
             if (series && info != null) {

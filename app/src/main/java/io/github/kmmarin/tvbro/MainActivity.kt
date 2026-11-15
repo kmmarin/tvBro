@@ -25,7 +25,7 @@ private val RESCUE_KEYS = setOf(
 class MainActivity : ComponentActivity() {
     private val model: AppModel by viewModels()
 
-    override fun onSearchRequested(): Boolean { model.section = Section.SEARCH; model.screen = Screen.LIST; return true }
+    override fun onSearchRequested(): Boolean { model.openSearch(); return true }
 
     // Long-press Back in the TV / guide view: straight to full-screen playback. Detected by key repeat, with a timer
     // as fallback for remotes that do not repeat; the release after a long press is swallowed so it is not a short Back.
@@ -55,6 +55,10 @@ class MainActivity : ComponentActivity() {
 
     override fun dispatchKeyEvent(e: android.view.KeyEvent): Boolean {
         val k = e.keyCode
+        Lat.key(e)
+        KeyHold.on(e)
+        DebugHooks.key(e) // debug builds: speed log (tvbro-perf)
+        io.github.kmmarin.tvbro.ui.FocusMemory.key(e)
         if (k == android.view.KeyEvent.KEYCODE_BACK) {
             if (handleBack(e)) return true
             // Back goes straight to the screens' Back handlers. Through Compose it first moved focus out of the focused
@@ -74,11 +78,12 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    override fun onStop() { model.stopLink(); super.onStop() }
+    override fun onStop() { model.stopLink(); model.stopSmbLink(); model.saveSnapshot(); super.onStop() }
     override fun onResume() { super.onResume(); io.github.kmmarin.tvbro.data.Reminders.appVisible = true }
     override fun onPause() { io.github.kmmarin.tvbro.data.Reminders.appVisible = false; super.onPause() }
 
     override fun onUserLeaveHint() {
+        super.onUserLeaveHint()
         if (android.os.Build.VERSION.SDK_INT >= 26 && (model.screen == Screen.PLAYER || model.screen == Screen.VODPLAY)) {
             try { enterPictureInPictureMode(android.app.PictureInPictureParams.Builder().setAspectRatio(android.util.Rational(16, 9)).build()) } catch (e: Exception) { }
         }
@@ -93,6 +98,28 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         if (applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE != 0) {
             android.os.StrictMode.setThreadPolicy(android.os.StrictMode.ThreadPolicy.Builder().detectDiskReads().detectDiskWrites().detectNetwork().penaltyLog().build())
+            // guide latency probe and key injector (debug builds only; see Lat):
+            // adb shell am broadcast -a io.github.kmmarin.tvbro.debug.KEY --ei code 20 --ei n 40 --ei ms 50
+            Lat.enabled = true
+            window.decorView.post { window.decorView.viewTreeObserver.addOnDrawListener { Lat.onDraw() } } // once attached
+            androidx.core.content.ContextCompat.registerReceiver(this, object : android.content.BroadcastReceiver() {
+                override fun onReceive(c: android.content.Context, i: android.content.Intent) {
+                    // code 0: measurement over (the screen may sleep again); otherwise it stays on meanwhile
+                    // --es group <part of a name>: select that group and focus it (positions a measurement run)
+                    i.getStringExtra("group")?.let { g ->
+                        val hit = model.groupList.firstOrNull { it.equals(g, true) } ?: model.groupList.firstOrNull { it.contains(g, true) }
+                        val sizes = model.shown.groupingBy { it.group }.eachCount()
+                        android.util.Log.i("tvbro-lat", "group $hit (${hit?.let { sizes[it] }} channels)")
+                        if (g == "SIZES") sizes.entries.sortedByDescending { it.value }.take(40).forEach { android.util.Log.i("tvbro-lat", "size ${it.value} ${it.key}") }
+                        if (hit != null) { model.section = Section.TV; model.screen = Screen.LIST; model.groupMoved = true; model.group = hit }
+                        return
+                    }
+                    val code = i.getIntExtra("code", 20)
+                    if (code == 0) { window.clearFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON); return }
+                    window.addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+                    Lat.inject(this@MainActivity, code, i.getIntExtra("n", 0), i.getIntExtra("ms", 50).toLong())
+                }
+            }, android.content.IntentFilter("io.github.kmmarin.tvbro.debug.KEY"), androidx.core.content.ContextCompat.RECEIVER_EXPORTED)
         }
         io.github.kmmarin.tvbro.data.Diag.sink = { android.util.Log.i("tvbro", it) }
         if (android.os.Build.VERSION.SDK_INT >= 33 && checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) != android.content.pm.PackageManager.PERMISSION_GRANTED)
@@ -111,6 +138,9 @@ class MainActivity : ComponentActivity() {
                         // guide window's edge) the newest remembered item still on screen was the side menu entry
                         (m.screen == Screen.LIST && m.section == Section.TV && m.railRight?.request() == true) ||
                         FocusMemory.restore() || m.railRight?.request() == true ||
+                            // (the selected group, never the first one: focusing a group selects it, and the fallback
+                            // below switched the TV screen to Favourites while the list was loading)
+                            (m.screen == Screen.LIST && m.section == Section.TV && m.focusGroupSel?.invoke() == true) ||
                             (hard && runCatching {
                                 fm.moveFocus(androidx.compose.ui.focus.FocusDirection.Next) || fm.moveFocus(androidx.compose.ui.focus.FocusDirection.Down)
                             }.getOrDefault(false))
@@ -122,21 +152,24 @@ class MainActivity : ComponentActivity() {
                 LaunchedEffect(FocusMemory.anyFocus, inputMode.inputMode) {
                     while (!FocusMemory.anyFocus && inputMode.inputMode != androidx.compose.ui.input.InputMode.Touch) {
                         kotlinx.coroutines.delay(400)
-                        if (!FocusMemory.anyFocus) { val ok = m.focusRescue?.invoke(true); io.github.kmmarin.tvbro.data.Diag.log("focus lost: rescue $ok") }
+                        if (!FocusMemory.anyFocus && !FocusMemory.restoring) { val ok = m.focusRescue?.invoke(true); io.github.kmmarin.tvbro.data.Diag.log("focus lost: rescue $ok") }
                     }
                 }
+                // every list in the app scrolls to the focused item one way (Settings > Appearance > Scrolling)
+                io.github.kmmarin.tvbro.ui.FocusScrollProvider {
                 Box(Modifier.fillMaxSize().background(Bg)) {
                     when (m.screen) {
-                        Screen.LIST -> HomeScreen(m)
+                        // one call site: opening / closing Settings (a panel over the home screen) keeps the home
+                        // screen as it is (two branches disposed and rebuilt all of it, the TV guide included)
+                        Screen.LIST, Screen.SETTINGS, Screen.VOD -> HomeScreen(m)
                         Screen.PLAYER -> {} // drawn above the live video, below
                         Screen.GUIDE -> GuideScreen(m)
-                        Screen.SETTINGS -> HomeScreen(m)
                         Screen.ADD_SOURCE -> AddSourceScreen(m)
                         Screen.GUIDE_SEARCH -> SearchScreen(m) { m.screen = Screen.GUIDE }
                         Screen.MAPPING -> MappingScreen(m)
-                        Screen.VOD -> HomeScreen(m)
                         Screen.RECORDINGS -> RecordingsScreen(m)
                         Screen.EDITOR -> EditorScreen(m)
+                        Screen.SMB_SETUP -> SmbSetupScreen(m)
                         Screen.DETAIL -> DetailPage(m)
                         Screen.VODPLAY -> androidx.compose.runtime.key(m.vodPlay?.key) { VodPlayerScreen(m) }
                     }
@@ -147,7 +180,9 @@ class MainActivity : ComponentActivity() {
                     ProgMenu(m)
                     ActionMenu(m)
                     PromptDialog(m)
+                    UndoBar(m)
                     io.github.kmmarin.tvbro.update.UpdatePrompt() // "Update available" after the daily check; Back = Later
+                }
                 }
             }
         }

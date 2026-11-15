@@ -53,6 +53,9 @@ object Updater {
     var prompt by mutableStateOf<ReleaseInfo?>(null)
         private set
 
+    /** Debug builds only (DebugHooks `debug.tvbro.show update`): shows the dialog for [r] without a check. */
+    internal fun debugOffer(r: ReleaseInfo) { prompt = r }
+
     /** Latest version seen by the last check (for Settings > About). */
     var latestSeen by mutableStateOf<String?>(null)
         private set
@@ -113,7 +116,7 @@ object Updater {
                         r.code == 404 -> State.Failed("No release published yet")
                         !r.isSuccessful -> State.Failed("GitHub answered ${r.code}")
                         else -> {
-                            val rel = UpdateLogic.parseLatest(r.body?.string().orEmpty(), BuildConfig.UPDATE_REPO)
+                            val rel = UpdateLogic.parseLatest(r.body?.string().orEmpty(), BuildConfig.UPDATE_REPO, android.os.Build.SUPPORTED_ABIS.toList())
                             val cur = currentVersion(ctx)
                             latestSeen = rel?.version
                             when {

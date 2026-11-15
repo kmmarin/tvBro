@@ -1,0 +1,38 @@
+# cargo deny check (advisories, bans, licenses, sources) for the tvBro core workspace.
+
+[graph]
+all-features = false
+
+[advisories]
+# RustSec advisory DB; any vulnerability or unmaintained / yanked crate fails the check unless listed here.
+yanked = "deny"
+ignore = [
+    # basic-toml is unmaintained (no known vulnerability). Build-time only: askama_derive (UniFFI's binding
+    # generator, both at their newest versions) uses it to read template config from our own source tree; it never
+    # parses untrusted input and is not in the shipped app. Drop this when UniFFI moves off askama's config feature.
+    { id = "RUSTSEC-2026-0374", reason = "unmaintained build-time dependency of UniFFI's generator; no upgrade available" },
+]
+
+[licenses]
+# Permissive licenses, plus MPL-2.0 (UniFFI: file-level copyleft, fine to link from Apache-2.0 code; we ship it
+# unmodified).
+allow = [
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "MIT",
+    "BSD-3-Clause",
+    "Zlib",
+    "Unicode-3.0",
+    "MPL-2.0",
+]
+confidence-threshold = 0.9
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+allow-wildcard-paths = true
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]

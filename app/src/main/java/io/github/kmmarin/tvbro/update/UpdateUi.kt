@@ -32,29 +32,14 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.compose.ui.window.Dialog
-import androidx.compose.ui.window.DialogProperties
 import kotlinx.coroutines.launch
 import io.github.kmmarin.tvbro.ui.Accent
 import io.github.kmmarin.tvbro.ui.Bg
 import io.github.kmmarin.tvbro.ui.TextDim
 import io.github.kmmarin.tvbro.ui.TextMain
 import io.github.kmmarin.tvbro.ui.tvFocus
-
-@Composable
-private fun Row2(title: String, value: String, onClick: () -> Unit) {
-    Row(Modifier.fillMaxWidth().padding(vertical = 2.dp).tvFocus(onClick = onClick).padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
-        Text(title, color = TextMain, fontSize = 18.sp, modifier = Modifier.weight(1f))
-        Text(value, color = Accent, fontSize = 18.sp)
-    }
-}
-
-@Composable
-private fun Btn(label: String, modifier: Modifier = Modifier, onClick: () -> Unit) {
-    Box(modifier.tvFocus(onClick = onClick).padding(horizontal = 22.dp, vertical = 12.dp)) {
-        Text(label, color = TextMain, fontSize = 18.sp)
-    }
-}
+import io.github.kmmarin.tvbro.ui.Popup
+import io.github.kmmarin.tvbro.ui.PopupButtons
 
 /** One label + action for the current state, shared by the dialog and Settings. */
 private fun primary(s: Updater.State): String? = when (s) {
@@ -79,7 +64,6 @@ fun UpdatePrompt() {
     val ctx = LocalContext.current
     val scope = rememberCoroutineScope()
     val first = remember { FocusRequester() }
-    LaunchedEffect(rel.version) { runCatching { first.requestFocus() } }
     val s = Updater.state
     val act: () -> Unit = {
         when (s) {
@@ -88,36 +72,22 @@ fun UpdatePrompt() {
             else -> scope.launch { Updater.download(ctx.applicationContext, rel) }
         }
     }
-    // A real dialog window: D-pad focus stays inside it and Back means Later.
-    Dialog(onDismissRequest = { Updater.later() }, properties = DialogProperties(usePlatformDefaultWidth = false)) {
-        Column(
-            Modifier.width(640.dp).background(Bg, RoundedCornerShape(14.dp)).padding(28.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp),
-        ) {
-            Text("Update available: tvBro ${rel.version}", color = TextMain, fontSize = 24.sp)
-            Text("You have ${Updater.currentVersion(ctx)}.", color = TextDim, fontSize = 16.sp)
-            if (rel.notes.isNotBlank()) {
-                Text(rel.notes.take(1200), color = TextDim, fontSize = 15.sp,
-                    modifier = Modifier.heightIn(max = 220.dp).verticalScroll(rememberScrollState()))
-            }
-            statusText(s)?.let { Text(it, color = Accent, fontSize = 16.sp) }
-            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                val label = when (s) { is Updater.State.Downloading -> "Downloading..."; else -> primary(s) ?: "Update" }
-                Btn(label, Modifier.focusRequester(first), act)
-                Btn("Later") { Updater.later() }
-                Btn("Skip this version") { Updater.skip(ctx, rel) }
-            }
-        }
+    // the app's one pop-up: focus stays inside, Back means Later
+    Popup(rel.version, "Update available: tvBro ${rel.version}", { Updater.later() }, width = 640.dp, focus = first) {
+        Text("You have ${Updater.currentVersion(ctx)}.", color = TextDim, fontSize = 16.sp)
+        if (rel.notes.isNotBlank()) Text(rel.notes.take(1200), color = TextDim, fontSize = 15.sp, modifier = Modifier.padding(top = 8.dp))
+        statusText(s)?.let { Text(it, color = Accent, fontSize = 16.sp, modifier = Modifier.padding(top = 8.dp)) }
+        val label = when (s) { is Updater.State.Downloading -> "Downloading..."; else -> primary(s) ?: "Update" }
+        PopupButtons(first, label to act, "Later" to { Updater.later() }, "Skip this version" to { Updater.skip(ctx, rel) })
     }
 }
-
 /** Settings > About rows: current / latest version, notes, automatic check on/off, check / download / install. */
 fun LazyListScope.updateSection() {
     if (!Updater.supported) return
     item {
         val ctx = LocalContext.current
         var auto by remember { mutableStateOf(Updater.autoEnabled(ctx)) }
-        Row2("Check for updates automatically", if (auto) "On (once a day)" else "Off") { auto = !auto; Updater.setAuto(ctx, auto) }
+        io.github.kmmarin.tvbro.ui.SettingRow("Check for updates automatically", if (auto) "On (once a day)" else "Off") { auto = !auto; Updater.setAuto(ctx, auto) }
     }
     item {
         val ctx = LocalContext.current
@@ -133,7 +103,7 @@ fun LazyListScope.updateSection() {
             is Updater.State.Ready -> "Install tvBro ${s.release.version}" to "downloaded and checked"
             is Updater.State.Failed -> (if (s.release != null) "Try again: tvBro ${s.release.version}" else "Check for updates") to latest
         }
-        Row2(title, value) {
+        io.github.kmmarin.tvbro.ui.SettingRow(title, value) {
             when (s) {
                 is Updater.State.Available -> scope.launch { Updater.download(ctx.applicationContext, s.release) }
                 is Updater.State.Ready -> Updater.install(ctx, s.release, s.file)

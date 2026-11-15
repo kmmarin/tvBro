@@ -19,6 +19,8 @@ import io.github.kmmarin.tvbro.*
 import io.github.kmmarin.tvbro.data.DlRepo
 import io.github.kmmarin.tvbro.data.RecRepo
 import java.io.File
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -27,15 +29,25 @@ import java.util.Locale
 fun RecordingsScreen(m: AppModel) {
     // as its own screen Back returns to the home screen; as a home section the home screen handles Back
     BackHandler(enabled = m.screen == Screen.RECORDINGS) { m.screen = Screen.LIST }
-    val ctx = LocalContext.current
-    val dir = RecRepo.currentDir(ctx, m.store.recStorage)
     val fmt = remember { object { fun format(d: Date) = io.github.kmmarin.tvbro.data.TimeFmt.dayTime(d.time) } }
     val list = RecRepo.items.sortedByDescending { it.startMs }
-    var confirm by remember { mutableStateOf<String?>(null) }
+    // deleting asks in the app's pop-up (it was an inline button row that never took focus)
+    fun confirmDelete(r: io.github.kmmarin.tvbro.data.Rec) {
+        m.menu = MenuState("Delete \"${r.title}\"? The file is deleted too.", listOf("Delete recording and file" to { m.deleteRec(r) }))
+    }
+    // Storage label (storage volumes, free space) and file sizes are read off the main thread: the screen opens at once
+    // and fills them in (they cost several disk / system calls each on the Fire TV).
+    val label by produceState("...", m.storageTick) { value = withContext(Dispatchers.IO) { runCatching { m.storageLabel() }.getOrDefault("?") } }
+    val files by produceState(emptyMap<String, Long>(), RecRepo.items, DlRepo.items) {
+        value = withContext(Dispatchers.IO) {
+            (RecRepo.items.filter { it.path.isNotEmpty() && !it.path.startsWith("smb:") }.map { it.id to it.path } + DlRepo.items.map { it.id to it.path })
+                .associate { (id, p) -> id to runCatching { File(p).length() }.getOrDefault(0L) }
+        }
+    }
     LazyColumn(Modifier.fillMaxSize().background(Bg).padding(32.dp)) {
-        item { Text("Recordings", color = Accent, fontSize = 28.sp) }
+        item { SectionTitle("Recordings") }
         item {
-            Text("Saving to ${remember(m.storageTick) { m.storageLabel() }} (minimum ${m.store.recMinFreeMb} MB free). Change in Settings > Recording.",
+            Text("Saving to $label (minimum ${m.store.recMinFreeMb} MB free). Change in Settings > Recording.",
                 color = TextDim, fontSize = 14.sp, modifier = Modifier.padding(vertical = 8.dp))
         }
         m.current?.let { c ->
@@ -57,8 +69,8 @@ fun RecordingsScreen(m: AppModel) {
             }
         }
         item { Text("Downloads (movies and episodes, Wi-Fi/Ethernet only)", color = TextDim, fontSize = 15.sp, modifier = Modifier.padding(top = 12.dp)) }
-        items(DlRepo.items.sortedBy { it.title }) { d ->
-            val have = DlRepo.progress[d.id] ?: File(d.path).takeIf { it.exists() }?.length() ?: 0L
+        items(DlRepo.items.sortedBy { it.title }, key = { "dl" + it.id }) { d ->
+            val have = DlRepo.progress[d.id] ?: files[d.id] ?: 0L
             val pct = if (d.total > 0) "  ${have * 100 / d.total}%" else ""
             val running = d.status == "downloading" || d.status == "queued"
             Column(
@@ -76,8 +88,8 @@ fun RecordingsScreen(m: AppModel) {
         }
         if (DlRepo.items.isEmpty()) item { Text("No downloads. Use Download on a movie page or Download season on a show.", color = TextDim) }
         if (list.isEmpty()) item { Text("No recordings. Press the red button while watching, or long-press OK on a programme in the guide.", color = TextDim, modifier = Modifier.padding(top = 12.dp)) }
-        items(list) { r ->
-            val size = (RecRepo.progress[r.id] ?: File(r.path).takeIf { r.path.isNotEmpty() }?.length() ?: 0L) / (1024 * 1024)
+        items(list, key = { "rec" + it.id }) { r ->
+            val size = (RecRepo.progress[r.id] ?: files[r.id] ?: 0L) / (1024 * 1024)
             val state = when (r.status) {
                 "scheduled" -> "scheduled"
                 "recording" -> "RECORDING"
@@ -90,13 +102,13 @@ fun RecordingsScreen(m: AppModel) {
                     .tvFocus(onLongClick = {
                         m.menu = MenuState(r.title, listOf(
                             (if ("r|${r.id}" in m.favourites) "Remove from My list" else "Add to My list") to { m.toggleFavRec(r) },
-                            "Delete" to { confirm = r.id },
+                            "Delete" to { confirmDelete(r) },
                         ))
                     }) {
                         when (r.status) {
                             "done" -> m.playRec(r)
                             "recording", "scheduled" -> m.stopRec(r)
-                            else -> confirm = r.id
+                            else -> confirmDelete(r)
                         }
                     }.padding(12.dp),
             ) {
@@ -106,12 +118,6 @@ fun RecordingsScreen(m: AppModel) {
                     when (r.status) { "done" -> "OK: play    Long-press: delete"; "failed" -> "OK: delete"; else -> "OK: stop / cancel    Long-press: delete" },
                     color = Accent, fontSize = 12.sp,
                 )
-                if (confirm == r.id) {
-                    Row(horizontalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.padding(top = 6.dp)) {
-                        TvButton("Delete recording and file") { m.deleteRec(r); confirm = null }
-                        TvButton("Keep") { confirm = null }
-                    }
-                }
             }
         }
     }

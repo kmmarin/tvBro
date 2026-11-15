@@ -22,10 +22,12 @@ class GuideSearchLogicTest {
         // an earlier programme entirely before the window moves it back
         assertEquals(t0 - 3600, GuideLayout.reveal(t0 - 3600, t0 - 1800, t0))
         // a programme that starts inside and ends after the window moves it forward
-        val n = GuideLayout.reveal(t0 + 7200, t0 + 7200 + 3600, t0)
+        val n = GuideLayout.reveal(t0 + 7200, t0 + 7200 + 2 * 3600, t0)
         assertTrue(n > t0)
         // a programme that starts inside and ends after the window moves it forward
-        assertTrue(GuideLayout.revealNoPast(t0 + 7200, t0 + 10800, t0, t0) > t0)
+        assertTrue(GuideLayout.revealNoPast(t0 + 7200, t0 + 4 * 3600, t0, t0) > t0)
+        // one that ends exactly at the window's end (3 h) is fully visible: the window stays
+        assertEquals(t0, GuideLayout.reveal(t0 + 7200, t0 + 10800, t0))
     }
 
     @Test fun guideNeverShowsThePast() {

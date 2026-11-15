@@ -6,4 +6,7 @@ package io.github.kmmarin.tvbro
 object DebugHooks {
     @Suppress("NOTHING_TO_INLINE") inline fun noAutoplay(): Boolean = false
     @Suppress("UNUSED_PARAMETER", "NOTHING_TO_INLINE") inline fun attach(m: AppModel) {}
+    @Suppress("NOTHING_TO_INLINE") inline fun coreProp(): String = ""
+    @Suppress("NOTHING_TO_INLINE") inline fun startProfile() {}
+    @Suppress("UNUSED_PARAMETER", "NOTHING_TO_INLINE") inline fun key(e: android.view.KeyEvent) {}
 }

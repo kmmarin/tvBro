@@ -1,0 +1,30 @@
+[workspace]
+resolver = "3"
+members = ["tvbro-core", "tvbro-ffi", "tvbro-py"]
+default-members = ["tvbro-core", "tvbro-ffi", "tvbro-py"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+repository = "https://github.com/kmmarin/tvBro"
+rust-version = "1.87"
+
+# PBKDF2 at 600k iterations and the big streaming tests need optimised dependencies in debug builds
+[profile.dev.package."*"]
+opt-level = 3
+
+# the core itself optimised too in host debug builds: the app's JVM comparison tests (CoreParityTest) load this
+# build and run a 400,000-programme guide through it
+[profile.dev.package.tvbro-core]
+opt-level = 2
+
+[profile.test]
+opt-level = 1
+
+[profile.release]
+lto = true
+codegen-units = 1
+opt-level = 3
+strip = "debuginfo"
+panic = "unwind"

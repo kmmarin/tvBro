@@ -4,6 +4,9 @@ package io.github.kmmarin.tvbro
 
 import org.junit.Assert.*
 import org.junit.Test
+import kotlinx.serialization.json.jsonArray
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import io.github.kmmarin.tvbro.update.UpdateLogic
 
 class UpdateLogicTest {
@@ -35,6 +38,34 @@ class UpdateLogicTest {
         assertEquals("ab".repeat(32), r.sha256)
         assertEquals("tvbro-0.2.0.apk", UpdateLogic.fileName(r))
         assertEquals(3L + 1_048_576, UpdateLogic.maxDownloadBytes(r))
+    }
+
+    /** A release with per-ABI APKs (listed first: the release workflow uploads the dist folder in name order) and the universal one. */
+    private val withSplits = sample.replace("\"assets\":[", "\"assets\":[" + listOf("arm64-v8a" to 11, "armeabi-v7a" to 12, "x86_64" to 13).joinToString("") { (abi, size) ->
+        """{"name":"abi-$abi-0.2.0.apk","size":$size,"browser_download_url":"https://github.com/o/r/releases/download/v0.2.0/abi-$abi-0.2.0.apk"},"""
+    })
+
+    @Test fun picksTheApkForTheDeviceAbi() {
+        assertEquals("abi-arm64-v8a-0.2.0.apk", UpdateLogic.parseLatest(withSplits, repo, listOf("arm64-v8a", "armeabi-v7a", "armeabi"))!!.apkName)
+        // Fire TV sticks with a 32-bit user space
+        assertEquals("abi-armeabi-v7a-0.2.0.apk", UpdateLogic.parseLatest(withSplits, repo, listOf("armeabi-v7a", "armeabi"))!!.let { assertEquals(12L, it.apkSize); it.apkName })
+        // the x86 TV emulator runs the ARM build through its translation: the first ABI with an APK
+        assertEquals("abi-armeabi-v7a-0.2.0.apk", UpdateLogic.parseLatest(withSplits, repo, listOf("x86", "armeabi-v7a", "armeabi"))!!.apkName)
+        assertEquals("abi-x86_64-0.2.0.apk", UpdateLogic.parseLatest(withSplits, repo, listOf("x86_64", "x86", "arm64-v8a"))!!.apkName)
+        // unknown ABI, no ABI list, or a release without splits: the universal APK
+        assertEquals("tvbro-0.2.0.apk", UpdateLogic.parseLatest(withSplits, repo, listOf("mips"))!!.apkName)
+        assertEquals("tvbro-0.2.0.apk", UpdateLogic.parseLatest(withSplits, repo)!!.apkName)
+        assertEquals("tvbro-0.2.0.apk", UpdateLogic.parseLatest(sample, repo, listOf("arm64-v8a"))!!.apkName)
+        assertEquals("arm64-v8a", UpdateLogic.abiOf("ABI-arm64-v8a-1.2.3.apk"))
+        assertNull(UpdateLogic.abiOf("tvbro-arm64-v8a.apk"))
+        assertNull(UpdateLogic.abiOf("abi-riscv64-1.0.apk"))
+    }
+
+    /** The asset rule of updaters released before the splits: the per-ABI names must never be picked by it. */
+    @Test fun olderUpdatersKeepTheUniversalApk() {
+        val o = kotlinx.serialization.json.Json.parseToJsonElement(withSplits).jsonObject
+        val apks = o["assets"]!!.jsonArray.map { it.jsonObject["name"]!!.jsonPrimitive.content }.filter { it.endsWith(".apk", true) && !it.contains("debug", true) }
+        assertEquals("tvbro-0.2.0.apk", apks.firstOrNull { it.contains("tvbro", true) } ?: apks.first())
     }
 
     @Test fun skipVersion() {
