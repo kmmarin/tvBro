@@ -1,0 +1,4 @@
+# osv-scanner config for core/Cargo.lock. Same accepted advisory as deny.toml (see the reason there).
+[[IgnoredVulns]]
+id = "RUSTSEC-2026-0374"
+reason = "basic-toml unmaintained, no known vulnerability; build-time only via UniFFI's askama_derive (newest versions); never parses untrusted input"
