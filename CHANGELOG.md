@@ -3,6 +3,27 @@
 All notable changes to tvBro. Versions follow `MAJOR.MINOR.PATCH`; the Android app's version code is
 `MAJOR * 10000 + MINOR * 100 + PATCH`.
 
+## 0.3.0 (Android)
+
+### New
+- **Multiview**: watch 2 to 4 live channels at once (side by side, 1+2, 3 in a row, 2x2 or 1+3). Focus and
+  sound follow the remote; OK on a tile changes, adds or removes a channel; Back goes full screen.
+- **Stream limit per provider**: tvBro reads each Xtream provider's connection limit and keeps every
+  preview, recording and multiview tile within it, naming the provider when a limit is reached. A
+  recording that starts closes multiview tiles past the limit.
+- **Account info** (Settings > Playlists): status, expiry and created dates, trial, active connections
+  and max streams for each Xtream source, with a warning when the account expires within 14 days. The
+  password is never shown.
+- Long-press Back opens the playing channel.
+
+### Changed
+- The global "Maximum simultaneous streams" setting is replaced by a number per source (taken from the
+  provider when it reports one); the old value is kept as each source's fallback.
+
+### Fixed
+- A recording interrupted when the app was closed no longer stays "recording" and holds a stream.
+- One OK press is one action: pop-ups no longer open and close at once.
+
 ## 0.2.0 (Android)
 
 ### New

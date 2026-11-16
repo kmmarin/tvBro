@@ -413,6 +413,28 @@ class Repository(ctx: Context, private val gentle: Boolean = false) {
         catch (e: Exception) { if (!sd.exists(f)) throw e }
         return sd.readText(f)
     }
+    /**
+     * The provider's account (Xtream `player_api.php` `user_info`: status, expiry, trial, `max_connections`,
+     * `active_cons`...), or null when the source is not Xtream or the server cannot be reached / does not answer with
+     * an account (the stored one then stays, see [StreamLimits.update]).
+     */
+    fun account(s: Source): StreamLimit? {
+        if (!s.isXtream) return null
+        return try {
+            val url = Xtream.normalizeServer(s.server) + "/player_api.php?username=" + java.net.URLEncoder.encode(s.user, "UTF-8") +
+                "&password=" + java.net.URLEncoder.encode(s.pass, "UTF-8")
+            Net.client.newBuilder().callTimeout(8, java.util.concurrent.TimeUnit.SECONDS).build().newCall(Net.request(url)).execute().use { r ->
+                if (!r.isSuccessful) null else r.body?.let { b -> StreamRules.parseAccount(String(b.byteStream().readNBytesCompat(256 * 1024), Charsets.UTF_8), System.currentTimeMillis()) }
+            }
+        } catch (e: Exception) { Diag.log("account: not available (${e.javaClass.simpleName})"); null }
+    }
+
+    private fun java.io.InputStream.readNBytesCompat(max: Int): ByteArray {
+        val out = java.io.ByteArrayOutputStream(); val buf = ByteArray(8192)
+        while (out.size() < max) { val k = read(buf, 0, minOf(buf.size, max - out.size())); if (k < 0) break; out.write(buf, 0, k) }
+        return out.toByteArray()
+    }
+
     /** Stored guide range and size for Settings. */
     fun epgInfo(s: Source): String {
         val db = EpgDb.get(appCtx)

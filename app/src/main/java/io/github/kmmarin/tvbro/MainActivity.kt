@@ -170,6 +170,7 @@ class MainActivity : ComponentActivity() {
                         Screen.RECORDINGS -> RecordingsScreen(m)
                         Screen.EDITOR -> EditorScreen(m)
                         Screen.SMB_SETUP -> SmbSetupScreen(m)
+                        Screen.MULTIVIEW -> io.github.kmmarin.tvbro.ui.MultiviewScreen(m)
                         Screen.DETAIL -> DetailPage(m)
                         Screen.VODPLAY -> androidx.compose.runtime.key(m.vodPlay?.key) { VodPlayerScreen(m) }
                     }
@@ -179,6 +180,7 @@ class MainActivity : ComponentActivity() {
                     ReminderPopup(m)
                     ProgMenu(m)
                     ActionMenu(m)
+                    AccountPopup(m)
                     PromptDialog(m)
                     UndoBar(m)
                     io.github.kmmarin.tvbro.update.UpdatePrompt() // "Update available" after the daily check; Back = Later

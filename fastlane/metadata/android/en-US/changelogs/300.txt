@@ -1,0 +1,6 @@
+tvBro 0.3.0
+- Multiview: 2 to 4 live channels at once (side by side, 1+2, 2x2, 1+3)
+- Stream limit per provider: previews, recordings and multiview stay within each Xtream account's limit
+- Account info for Xtream sources: status, expiry, connections, max streams (never the password)
+- Long-press Back opens the playing channel
+- Fixes: interrupted recordings no longer hold a stream; one OK press is one action

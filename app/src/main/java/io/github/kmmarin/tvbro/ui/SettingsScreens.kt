@@ -25,9 +25,13 @@ import kotlinx.coroutines.launch
 import androidx.compose.foundation.focusGroup
 import io.github.kmmarin.tvbro.update.updateSection
 
-/** The app's one setting row (title left, value right), also Settings > About's update rows. */
+/**
+ * The app's one setting / value row (title left, value right): settings, Settings > About's update rows, and the
+ * account info rows. [valueColor]: the value's colour (status green / red; the accent colour by default).
+ */
 @Composable
-fun SettingRow(title: String, value: String, onLeft: (() -> Unit)? = null, onRight: (() -> Unit)? = null, mod: Modifier = Modifier, onClick: () -> Unit) {
+fun SettingRow(title: String, value: String, onLeft: (() -> Unit)? = null, onRight: (() -> Unit)? = null, mod: Modifier = Modifier,
+               valueColor: androidx.compose.ui.graphics.Color = Accent, onClick: () -> Unit) {
     Row(
         mod.fillMaxWidth().padding(vertical = 2.dp)
             .onPreviewKeyEvent { e ->
@@ -42,7 +46,7 @@ fun SettingRow(title: String, value: String, onLeft: (() -> Unit)? = null, onRig
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Text(title, color = TextMain, fontSize = 18.sp, modifier = Modifier.weight(1f))
-        Text(value, color = Accent, fontSize = 18.sp)
+        Text(value, color = valueColor, fontSize = 18.sp)
     }
 }
 
@@ -79,12 +83,14 @@ private fun LazyListScope.general(m: AppModel) {
 
 private fun LazyListScope.playlists(m: AppModel) {
     head("Playlists")
-    for (s in m.sources) item(key = s.id) {
+    for (s in m.sources) {
+    item(key = s.id) {
         val t = m.store.lastRefresh(s.id)
         val n = m.channels.count { it.sourceId == s.id }
         SettingRow(s.name + (if (s.isXtream) "  (Xtream)" else "  (M3U)") + (if (!s.enabled) "  [disabled]" else ""),
             "$n channels, " + (if (t == 0L) "never updated" else "updated " + io.github.kmmarin.tvbro.data.TimeFmt.dayTime(t, "d MMM"))) {
             m.menu = MenuState(s.name, listOf(
+                "Account info" to { m.openAccount(s) },
                 "Refresh now" to { m.loadAll(true) },
                 (if (s.enabled) "Disable" else "Enable") to { m.setSourceEnabled(s, !s.enabled) },
                 "Move up" to { m.moveSource(s, -1) },
@@ -93,6 +99,9 @@ private fun LazyListScope.playlists(m: AppModel) {
                 "Remove source" to { m.removeSource(s) },
             ))
         }
+    }
+    // the provider's stream limit right under its playlist; OK: the account info
+    item(key = "ms" + s.id) { MaxStreamsRow(m, s, "    Max streams") { m.openAccount(s) } }
     }
     item { SettingRow("Add source", "") { m.screen = Screen.ADD_SOURCE } }
 }
@@ -230,8 +239,7 @@ private fun LazyListScope.playback(m: AppModel) {
         SettingRow("Default audio delay (per channel override in the player bar)", "%+d ms".format(v),
             { v = (v - 50).coerceAtLeast(-1000); m.store.audioDelayDefault = v }, { v = (v + 50).coerceAtMost(1000); m.store.audioDelayDefault = v }) { v = 0; m.store.audioDelayDefault = 0 }
     }
-    item { SettingRow("Maximum simultaneous streams", "${m.maxStreams}", { m.changeMaxStreams(m.maxStreams - 1) }, { m.changeMaxStreams(m.maxStreams + 1) }) { m.changeMaxStreams(m.maxStreams % 3 + 1) } }
-    note("Keep this at or below what your provider account allows. A running recording holds one stream: with the limit reached the live preview stays off and tvBro warns before playing another channel.")
+    note("Simultaneous streams: each provider's own limit (Settings > Playlists). A running recording holds one stream: with the limit reached the live preview stays off and tvBro warns before playing another channel.")
     item { SettingRow("Autoplay next episode", if (m.autoplayNext) "On (Up next card, 10 s countdown)" else "Off") { m.changeAutoplayNext(!m.autoplayNext) } }
     item { SettingRow("Match display frame rate", if (m.matchFps) "On (when seamless)" else "Off") { m.changeMatchFps(!m.matchFps) } }
     item { SettingRow("Use external player", if (m.external) "On (needs a video player app)" else "Off") { m.changeExternal(!m.external) } }

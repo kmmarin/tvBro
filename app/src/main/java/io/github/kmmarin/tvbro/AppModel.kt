@@ -24,7 +24,7 @@ import java.util.UUID
 
 enum class Section { SEARCH, TV, MOVIES, SHOWS, RECORDINGS, MYLIST }
 
-enum class Screen { LIST, PLAYER, GUIDE, SETTINGS, ADD_SOURCE, GUIDE_SEARCH, MAPPING, VOD, DETAIL, VODPLAY, RECORDINGS, EDITOR, SMB_SETUP }
+enum class Screen { LIST, PLAYER, GUIDE, SETTINGS, ADD_SOURCE, GUIDE_SEARCH, MAPPING, VOD, DETAIL, VODPLAY, RECORDINGS, EDITOR, SMB_SETUP, MULTIVIEW }
 
 /** A past programme playing from the archive; [lenMs]: its length (the stream itself may run on for hours). */
 data class CatchupPlay(val url: String, val title: String, val lenMs: Long = 0)
@@ -58,6 +58,8 @@ const val GROUP_FAV = "Favourites"
 class AppModel(private val app: Application) : AndroidViewModel(app) {
     val store = Store(app)
     private val repo = Repository(app)
+    /** When this model was made: a provider account read before it is read again (once per run). */
+    private val startedAt = System.currentTimeMillis()
 
     var sources by mutableStateOf<List<Source>>(emptyList())
     var channels by mutableStateOf<List<Channel>>(emptyList())
@@ -145,6 +147,10 @@ class AppModel(private val app: Application) : AndroidViewModel(app) {
     var unlocked by mutableStateOf<Set<String>>(emptySet())
     var menu by mutableStateOf<MenuState?>(null)
     var prompt by mutableStateOf<PromptState?>(null)
+    /** The account info popup (ui/AccountPopup.kt): the source shown, null when closed. */
+    var accountOf by mutableStateOf<Source?>(null)
+    /** Sources whose account is being asked right now (the popup shows "Checking..."); declared before init's loadAll. */
+    val accountBusy = androidx.compose.runtime.mutableStateListOf<String>()
 
     val shown: List<Channel> by derivedStateOf {
         val p = prefs
@@ -178,7 +184,7 @@ class AppModel(private val app: Application) : AndroidViewModel(app) {
         // Create these objects' Compose state here, on the main thread before the first composition: created on the IO
         // thread below while the UI composes, reading them crashed ("state created after the snapshot was taken").
         RecRepo.items; io.github.kmmarin.tvbro.data.DlRepo.items
-        io.github.kmmarin.tvbro.data.Reminders.items; io.github.kmmarin.tvbro.data.SeriesRules.items
+        io.github.kmmarin.tvbro.data.Reminders.items; io.github.kmmarin.tvbro.data.SeriesRules.items; StreamLimits.items
         // Keystore-backed storage and file work stay off the main thread; the UI shows cached data as soon as it is read.
         viewModelScope.launch(Dispatchers.IO) {
             io.github.kmmarin.tvbro.ui.Logos.dir = java.io.File(app.cacheDir, "logos")
@@ -189,6 +195,7 @@ class AppModel(private val app: Application) : AndroidViewModel(app) {
             // that cannot be read must not leave an empty TV screen)
             if (s.isEmpty()) screen = Screen.ADD_SOURCE else if (screen == Screen.ADD_SOURCE) screen = Screen.LIST
             if (store.secureFailed) toast("Saved sources could not be decrypted on this device. Please add them again.")
+            try { StreamLimits.init(store, s.map { it.id }) } catch (e: Exception) { Diag.log("stream limits init failed (${e.javaClass.simpleName})") }
             try { RecRepo.init(app) } catch (e: Exception) { Diag.log("recordings init failed (${e.javaClass.simpleName})") }
             if (s.isNotEmpty()) loadAll(false)
             try { Refresh.schedule(app, store.chHours) } catch (e: Exception) { Diag.log("could not schedule refresh") }
@@ -200,6 +207,9 @@ class AppModel(private val app: Application) : AndroidViewModel(app) {
     fun loadAll(force: Boolean) {
         val srcs = sources.filter { it.enabled }
         val multi = srcs.size > 1
+        // the providers' accounts (stream limit, expiry) beside the playlist, never in its way: once per run, and with
+        // every refresh
+        for (s in srcs) if (force || (StreamLimits.get(s.id)?.checkedAt ?: 0L) < startedAt) refreshAccount(s)
         viewModelScope.launch(Dispatchers.IO) {
             Refresh.fgBusy = true
             // the guide database opens while the channel list is read (the rows of the start snapshot load from it)
@@ -280,12 +290,137 @@ class AppModel(private val app: Application) : AndroidViewModel(app) {
     fun changeStartLast(b: Boolean) { startLast = b; store.startLast = b }
     fun setBuffer(s: Int) { bufferSec = s; store.bufferSec = s }
 
-    // ---- Stream limit: recordings hold a stream; preview and playback share the rest ----
-    var maxStreams by mutableIntStateOf(store.maxStreams); private set
-    fun changeMaxStreams(n: Int) { maxStreams = n.coerceIn(1, 3); store.maxStreams = maxStreams }
-    fun recordingStreams(): Int = RecRepo.items.count { it.status == "recording" }
-    /** True when recordings already use every allowed stream (the preview then stays off). */
-    fun streamsFull(): Boolean = recordingStreams() >= maxStreams
+    // ---- Stream limit, per provider (data/StreamLimits.kt): recordings hold a stream; live TV shares the rest ----
+    fun sourceName(id: String?): String = sources.firstOrNull { it.id == id }?.name ?: "The provider"
+    /** The provider of each running recording (null: unknown, it counts against every provider). */
+    fun recordingSources(): List<String?> = RecRepo.items.filter { it.status == "recording" }.map { r ->
+        StreamRules.recSource(r.chKey, r.channel) { n -> channels.firstOrNull { it.name == n }?.sourceId }
+    } + DlRepo.items.filter { it.status == "downloading" }.map { d -> StreamRules.dlSource(d.url, sources) }
+    /** Streams provider [id] allows ([StreamLimits]: its own number, else the user's, else 1). */
+    fun streamLimit(id: String?): Int = id?.let { StreamLimits.limit(it) } ?: StreamRules.DEFAULT
+    /** Streams provider [id] has left for live TV: its limit minus its running recordings. */
+    fun freeStreams(id: String?): Int = if (id == null) streamLimit(null) else StreamRules.free(streamLimit(id), id, recordingSources())
+    /** True when recordings already use every stream of [id]'s provider (the preview then stays off). */
+    fun streamsFull(id: String? = current?.sourceId): Boolean = freeStreams(id) <= 0
+    private fun recNote(id: String): String = recordingSources().count { it == null || it == id }.let { n ->
+        when (n) { 0 -> ""; 1 -> ", a recording or download uses 1"; else -> ", recordings and downloads use $n" }
+    }
+    /** "Provider allows 3 streams, a recording uses 1": for every stream limit message. */
+    fun limitText(id: String): String = streamLimit(id).let { n -> "${sourceName(id)} allows $n stream${if (n == 1) "" else "s"}" } + recNote(id)
+
+    /** Asks the provider for [s]'s account (Xtream only) off the main thread; the stored one stays when it fails. */
+    fun refreshAccount(s: Source, done: () -> Unit = {}) {
+        if (!s.isXtream) { done(); return }
+        viewModelScope.launch(Dispatchers.Main) {
+            if (s.id in accountBusy) { done(); return@launch }
+            accountBusy += s.id
+            val a = kotlinx.coroutines.withContext(Dispatchers.IO) { repo.account(s) }
+            if (a != null) { StreamLimits.update(s.id, a); mvFit() }   // a lower limit closes tiles past it
+            Diag.log("account ${s.id.take(6)}: " + (a?.let { "max ${it.reported}, active ${it.active}, ${it.status}" } ?: "not available"))
+            accountBusy -= s.id
+            done()
+        }
+    }
+
+    /** Account info of [s], asked again as it opens. */
+    fun openAccount(s: Source) { accountOf = s; refreshAccount(s) }
+
+    /** The user's own stream limit for a provider that does not report one. */
+    fun setUserStreams(s: Source, n: Int) = StreamLimits.setUser(s.id, n)
+
+    // ---- Multiview (ui/Multiview.kt): 2 to 4 live channels at once, one connection each, within each provider's limit ----
+    /** The tiles' channels, in tile order (empty: multiview is not open). */
+    val mvTiles = androidx.compose.runtime.mutableStateListOf<Channel>()
+    /** The layout chosen (used when it fits the number of tiles, see [MvRules.resolve]). */
+    var mvLayout by mutableStateOf(MvLayout.SIDE)
+
+    /** The focused tile: it has the sound, and OK / Back act on it. */
+    var mvFocus by mutableIntStateOf(0)
+    private fun mvSources(): List<String> = mvTiles.map { it.sourceId }
+
+    /** True when [c] can go into tile [slot] (null: as a new tile) within its provider's limit. */
+    fun mvFits(c: Channel, slot: Int?): Boolean = MvRules.fits(mvSources(), slot, c.sourceId) { freeStreams(it) }
+
+    /**
+     * Opens multiview with the playing channel (and [add], from a channel menu). A provider whose account was never
+     * read is asked first; with room for fewer than two streams it says so (naming the provider's limit) and stays.
+     */
+    fun openMultiview(add: Channel? = null) {
+        val first = listOfNotNull(current, add).distinctBy { it.key }.filterNot { isLocked(it) }
+        if (first.isEmpty()) { toast("Play a channel first, then open multiview"); return }
+        viewModelScope.launch {
+            for (id in first.map { it.sourceId }.distinct()) {
+                val s = sources.firstOrNull { it.id == id } ?: continue
+                if (s.isXtream && (StreamLimits.get(id)?.checkedAt ?: 0L) == 0L)
+                    kotlinx.coroutines.withContext(Dispatchers.IO) { repo.account(s) }?.let { StreamLimits.update(id, it) }
+            }
+            val ids = first.map { it.sourceId }.distinct()
+            if (MvRules.room(ids) { freeStreams(it) } < 2) {
+                toast("Multiview needs 2 streams: " + ids.joinToString("; ") { limitText(it) })
+                return@launch
+            }
+            // the full-screen / preview player gives its connection up first (the tiles wait for it, see Multiview.kt)
+            liveExo?.let { it.stop(); it.clearMediaItems() }; liveUrl = null; liveKey = null
+            mvTiles.clear(); mvTiles.addAll(MvRules.take(first, { it.sourceId }) { freeStreams(it) })
+            mvFocus = (mvTiles.size - 1).coerceAtLeast(0)
+            screen = Screen.MULTIVIEW
+            Diag.log("multiview: ${mvTiles.size} tiles (" + ids.joinToString { "limit ${streamLimit(it)}, free ${freeStreams(it)}" } + ")")
+        }
+    }
+
+    /** Debug builds (DebugHooks `debug.tvbro.mv`): multiview on [chs] at once (test streams, no limit check). */
+    fun mvOpenForTest(chs: List<Channel>, layout: MvLayout) {
+        if (!BuildConfig.DEBUG || chs.isEmpty()) return
+        liveExo?.let { it.stop(); it.clearMediaItems() }; liveUrl = null; liveKey = null
+        mvTiles.clear(); mvTiles.addAll(chs.take(MvRules.MAX_TILES)); mvLayout = layout; mvFocus = 0
+        screen = Screen.MULTIVIEW
+    }
+
+    /** Why [c] cannot be a new tile: "Provider allows 3 streams: all in use. Change a tile's channel instead". */
+    fun mvRefusal(c: Channel): String =
+        if (mvTiles.size >= MvRules.MAX_TILES) "Multiview shows at most ${MvRules.MAX_TILES} channels: change a tile's channel instead"
+        else "${limitText(c.sourceId)}: all in use. Change a tile's channel instead"
+
+    /** Puts [c] into tile [i] (a new tile when [i] is past the end and its provider's limit allows one). */
+    fun mvSet(i: Int, c: Channel) {
+        if (isLocked(c)) { askPin { unlock(c); mvSet(i, c) }; return }
+        if (mvTiles.any { it.key == c.key }) { mvFocus = mvTiles.indexOfFirst { it.key == c.key }; return }
+        val slot = i.takeIf { it in mvTiles.indices }
+        when {
+            !mvFits(c, slot) -> toast(mvRefusal(c))
+            slot != null -> { mvTiles[slot] = c; mvFocus = slot }
+            else -> { mvTiles.add(c); mvFocus = mvTiles.size - 1 }
+        }
+    }
+
+    /**
+     * A recording started while multiview runs: tiles past their provider's limit close (the last ones first), so the
+     * provider never sees more streams than it allows. One tile left: back to full screen.
+     */
+    fun mvFit() {
+        if (mvTiles.isEmpty()) return
+        val keep = MvRules.take(mvTiles.toList(), { it.sourceId }) { freeStreams(it) }
+        if (keep.size == mvTiles.size) return
+        val gone = mvTiles.size - keep.size
+        if (keep.isEmpty()) { val id = mvTiles[0].sourceId; mvLeave(full = false); toast("Multiview closed: " + limitText(id)); return }
+        mvTiles.retainAll(keep.toSet()); mvFocus = mvFocus.coerceAtMost(mvTiles.size - 1)
+        toast("$gone tile${if (gone == 1) "" else "s"} closed: " + limitText(mvTiles[0].sourceId))
+    }
+
+    fun mvRemove(i: Int) {
+        if (i !in mvTiles.indices) return
+        if (mvTiles.size <= 1) { mvLeave(); return }
+        mvTiles.removeAt(i); mvFocus = mvFocus.coerceAtMost(mvTiles.size - 1)
+    }
+
+    /** Leaves multiview: full screen on the focused tile's channel ([full]), else the TV screen. */
+    fun mvLeave(full: Boolean = true) {
+        val c = mvTiles.getOrNull(mvFocus)
+        mvTiles.clear()
+        if (c != null) { current = c; catchup = null; store.lastKey = c.key }
+        screen = if (full && c != null) Screen.PLAYER else Screen.LIST
+        if (!full) leavePlayer()
+    }
 
     // ---- One live player for full screen and the TV preview (see ui/LiveVideo.kt) ----
     var liveExo: androidx.media3.exoplayer.ExoPlayer? = null
@@ -384,7 +519,7 @@ class AppModel(private val app: Application) : AndroidViewModel(app) {
     fun play(c: Channel) {
         // parental lock, on every path (lists, guide, search, the "play" launch extra)
         if (isLocked(c)) { askPin { unlock(c); play(c) }; return }
-        if (streamsFull() && activeRec(c) == null) toast("Stream limit $maxStreams: a recording is using it, the provider may refuse this channel")
+        if (streamsFull(c.sourceId) && activeRec(c) == null) toast("${limitText(c.sourceId)}: the provider may refuse this channel")
         current = c; catchup = null; store.lastKey = c.key
         if (external && launchExternal(c.url)) return
         screen = Screen.PLAYER
@@ -396,7 +531,7 @@ class AppModel(private val app: Application) : AndroidViewModel(app) {
      * preview (off, or the stream limit is reached) OK goes straight to full screen.
      */
     fun previewOrPlay(c: Channel) {
-        if (!previewOn || streamsFull() || external || current?.key == c.key || isLocked(c)) { play(c); return }
+        if (!previewOn || streamsFull(c.sourceId) || external || current?.key == c.key || isLocked(c)) { play(c); return }
         current = c; catchup = null; store.lastKey = c.key
     }
 
@@ -465,13 +600,14 @@ class AppModel(private val app: Application) : AndroidViewModel(app) {
 
     /** Long-press Back applies in the TV section (live preview) and the full guide, when there is a channel to show. */
     fun backLongApplies(): Boolean =
-        ((screen == Screen.LIST && section == Section.TV) || screen == Screen.GUIDE) && (focusCh ?: current) != null &&
+        ((screen == Screen.LIST && section == Section.TV) || screen == Screen.GUIDE) &&
+            io.github.kmmarin.tvbro.data.BackLong.target(current, focusCh) != null &&
             menu == null && prompt == null && progMenu == null
 
-    /** Long-press Back: the previewed (focused) channel full screen. Returns true when it acted. */
+    /** Long-press Back: the playing (preview) channel full screen, see [io.github.kmmarin.tvbro.data.BackLong]. True when it acted. */
     fun backLongPress(): Boolean {
         if (!backLongApplies()) return false
-        val c = focusCh ?: current ?: return false
+        val c = io.github.kmmarin.tvbro.data.BackLong.target(current, focusCh) ?: return false
         play(c); return true
     }
 
@@ -510,6 +646,7 @@ class AppModel(private val app: Application) : AndroidViewModel(app) {
         sources = sources - s
         store.saveSources(sources)
         repo.removeSourceFiles(s.id)
+        StreamLimits.remove(s.id)
         channels = channels.filter { it.sourceId != s.id }
         rebuildIndex()
         if (sources.isEmpty()) screen = Screen.ADD_SOURCE
@@ -633,6 +770,8 @@ class AppModel(private val app: Application) : AndroidViewModel(app) {
         val fav = if (c.key in favourites) "Remove from Favourites (My list)" else "Add to Favourites (My list)"
         val items = ArrayList<Pair<String, () -> Unit>>()
         items += "Watch" to { play(c) }
+        if (screen == Screen.MULTIVIEW) items += "Show in multiview" to { mvSet(mvTiles.size, c) }
+        else if (current != null && current?.key != c.key) items += "Multiview with ${current?.name}" to { openMultiview(c) }
         items += fav to { toggleFav(c) }
         val now = System.currentTimeMillis() / 1000
         val cur = epg.nowNext(c, now).first
@@ -727,7 +866,7 @@ class AppModel(private val app: Application) : AndroidViewModel(app) {
     }
 
     /** A popup layer is open (focus stays in it; closing it puts focus back). */
-    fun layerOpen(): Boolean = menu != null || prompt != null || progMenu != null || undo != null || dueReminder != null
+    fun layerOpen(): Boolean = menu != null || prompt != null || progMenu != null || undo != null || dueReminder != null || accountOf != null
 
     fun newGroup() { prompt = PromptState("New group name", "", false) { v ->
         val n = v.trim(); if (n.isNotEmpty() && n != GROUP_ALL && n != GROUP_FAV) savePrefs2(prefs.copy(custom = prefs.custom + (n to emptyList())))
@@ -839,8 +978,9 @@ class AppModel(private val app: Application) : AndroidViewModel(app) {
         val end = if (endMs > 0) endMs else if (minutes > 0) now + minutes * 60_000L else 0L
         val dir = RecRepo.currentDir(app, store.recStorage)
         if (RecRepo.freeMb(dir) < store.recMinFreeMb) { toast("Not enough free space (${RecRepo.freeMb(dir)} MB, need ${store.recMinFreeMb} MB)"); return }
+        val full = streamsFull(c.sourceId)
         startRec(Rec(UUID.randomUUID().toString().take(8), c.name, c.name, c.url, now, end, chKey = c.key))
-        toast("Recording ${c.name}")
+        toast(if (full) "Recording ${c.name}. ${limitText(c.sourceId)}: the provider may refuse it" else "Recording ${c.name}")
     }
 
     fun recordProgramme(c: Channel, p: Programme, quiet: Boolean = false) {

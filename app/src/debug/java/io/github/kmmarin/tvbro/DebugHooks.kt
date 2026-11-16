@@ -20,6 +20,7 @@ import kotlinx.coroutines.launch
  *    charge and compares the core afterwards, summary in `files/core-shadow.log`;
  *  - `adb shell setprop debug.tvbro.epgbench kotlin|core`: one guide store benchmark run at the next start ([EpgBench]);
  *  - `adb shell setprop debug.tvbro.scroll centre|edge`: the list scrolling mode from the next start (not saved);
+ *  - `adb shell setprop debug.tvbro.mv "<url>|<url>[;13]"`: multiview on test streams (stats: tag tvbro-mv);
  *  - logcat tag `tvbro-dbg`: screen / section / playing channel / player state on every change, and every new media
  *    item (a re-buffer) of the live player. Stream addresses are never logged.
  */
@@ -169,6 +170,24 @@ object DebugHooks {
                         "Example release notes for a screenshot.\n- One player overlay\n- Faster rows", "https://example.invalid"))
                     "none" -> { m.progMenu = null; m.menu = null; m.prompt = null; m.dueReminder = null; io.github.kmmarin.tvbro.update.Updater.later() }
                 }
+            }
+        }
+        // `adb shell setprop debug.tvbro.mv "<url>|<url>|...[;13]"` (or names "1080-1,540-2" under `debug.tvbro.mvbase`): multiview on those test streams at once (";13": the
+        // 1+3 layout), `none` closes it; tile stats every 5 s under tag tvbro-mv. Test channels only, nothing is saved.
+        m.viewModelScope.launch {
+            var seen = prop("debug.tvbro.mv")
+            while (true) {
+                delay(300)
+                val v = prop("debug.tvbro.mv")
+                if (v == seen) continue
+                seen = v
+                if (v.isEmpty() || v == "none") { if (m.screen == Screen.MULTIVIEW) { m.mvLeave(full = false); stop(m) }; continue }
+                // (a property value holds 91 characters: "1080-1,540-2" are names under debug.tvbro.mvbase, e.g. http://host:8767/live/)
+                val base = prop("debug.tvbro.mvbase")
+                val urls = v.substringBefore(';').split('|', ',').map { it.trim() }.filter { it.isNotEmpty() }.map { if (it.startsWith("http")) it else "$base$it.ts" }.filter { it.startsWith("http") }
+                val chs = urls.mapIndexed { i, u -> io.github.kmmarin.tvbro.data.Channel("dbg|$i", "dbg", "Test ${i + 1}", null, "Test", u, null, i + 1, null, 0) }
+                Log.i("tvbro-mv", "open ${chs.size} test tiles")
+                m.mvOpenForTest(chs, if (v.substringAfter(';', "") == "13") io.github.kmmarin.tvbro.data.MvLayout.ONE_PLUS_THREE else io.github.kmmarin.tvbro.data.MvLayout.GRID)
             }
         }
         prop("debug.tvbro.epgbench").takeIf { it == "kotlin" || it == "core" }?.let { which ->
