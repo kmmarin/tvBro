@@ -103,28 +103,40 @@ fun rememberLiveExo(m: AppModel): ExoPlayer {
     return remember {
         m.liveExo ?: LivePlayer.exo?.also { m.liveExo = it } ?: run {
             LivePlayer.built++
-            val ms = m.bufferSec * 1000
-            ExoPlayer.Builder(ctx, delayFactory(ctx, m.delayProc))
-                // media audio with audio focus: the sound comes back after another app (or the movie player) had it
-                .setAudioAttributes(
-                    androidx.media3.common.AudioAttributes.Builder().setUsage(androidx.media3.common.C.USAGE_MEDIA)
-                        .setContentType(androidx.media3.common.C.AUDIO_CONTENT_TYPE_MOVIE).build(), true,
-                )
-                .setMediaSourceFactory(Captions.factory(CountingFactory(OkHttpDataSource.Factory(LiveHttp.client))))
-                .setLoadControl(
-                    DefaultLoadControl.Builder()
-                        .setBufferDurationsMs(ms.coerceAtLeast(2500), ms.coerceAtLeast(2500), 1200, 3000)
-                        .setTargetBufferBytes(32 * 1024 * 1024)
-                        .setPrioritizeTimeOverSizeThresholds(false)
-                        .build(),
-                ).build().also {
-                    // the remembered caption choice (off by default)
-                    it.trackSelectionParameters = liveCaptionParams(it.trackSelectionParameters, m.store.liveCaptions)
-                    if (ZapTrace.on()) it.addAnalyticsListener(ZapTrace.player)
-                    m.liveExo = it; LivePlayer.exo = it
-                }
+            buildLiveExo(ctx, m, tile = false).also { m.liveExo = it; LivePlayer.exo = it }
         }
     }
+}
+
+/**
+ * The live players' one recipe (the full-screen / preview player and every multiview tile): the same HTTP client,
+ * counted connections ([LiveConns]), captions and audio delay. A tile buffers less (four of them share the stick's
+ * memory) and leaves audio focus alone: the tiles play at once and only the focused one is heard (its volume).
+ */
+fun buildLiveExo(ctx: android.content.Context, m: AppModel, tile: Boolean): ExoPlayer {
+    val ms = if (tile) 3000 else m.bufferSec * 1000 // (at least the 3 s re-buffer threshold below)
+    // (an audio processor serves one player only: a tile gets its own, with the current delay)
+    val proc = if (tile) AudioDelayProcessor().also { it.targetMs = m.delayProc.targetMs } else m.delayProc
+    return ExoPlayer.Builder(ctx, delayFactory(ctx, proc))
+        // media audio with audio focus: the sound comes back after another app (or the movie player) had it
+        .setAudioAttributes(
+            androidx.media3.common.AudioAttributes.Builder().setUsage(androidx.media3.common.C.USAGE_MEDIA)
+                .setContentType(androidx.media3.common.C.AUDIO_CONTENT_TYPE_MOVIE).build(), !tile,
+        )
+        .setMediaSourceFactory(Captions.factory(CountingFactory(OkHttpDataSource.Factory(LiveHttp.client))))
+        .setLoadControl(
+            DefaultLoadControl.Builder()
+                .setBufferDurationsMs(ms.coerceAtLeast(2500), ms.coerceAtLeast(2500), 1200, 3000)
+                .setTargetBufferBytes((if (tile) 8 else 32) * 1024 * 1024)
+                .setPrioritizeTimeOverSizeThresholds(false)
+                .build(),
+        ).build().also {
+            // the remembered caption choice (off by default; tiles never show captions)
+            it.trackSelectionParameters = if (tile) it.trackSelectionParameters.buildUpon()
+                .setTrackTypeDisabled(androidx.media3.common.C.TRACK_TYPE_TEXT, true).build()
+            else liveCaptionParams(it.trackSelectionParameters, m.store.liveCaptions)
+            if (ZapTrace.on()) it.addAnalyticsListener(ZapTrace.player)
+        }
 }
 
 /**

@@ -82,14 +82,30 @@ fun Modifier.tvFocus(
         if (f != was[0]) { was[0] = f; onFocus?.invoke(f); if (f) { FocusMemory.gained(); FocusMemory.focused(me, inRail); if (inRail && Lat.enabled) android.util.Log.i("tvbro-lat", "side menu focused") } else FocusMemory.lost() }
     }
     androidx.compose.runtime.DisposableEffect(Unit) { onDispose { if (was[0]) { was[0] = false; FocusMemory.lost(); FocusMemory.disposedAt = android.os.SystemClock.uptimeMillis(); if (Lat.enabled) android.util.Log.i("tvbro-lat", "focused item disposed") } } }
+    val gate = remember { io.github.kmmarin.tvbro.data.PressGate() }
     this.safeFocus(me)
-        // the remote's Menu key opens the same menu as a long press of OK
         .onPreviewKeyEvent { e ->
-            if (onLongClick != null && e.type == androidx.compose.ui.input.key.KeyEventType.KeyDown && e.key == androidx.compose.ui.input.key.Key.Menu) { onLongClick(); true } else false
+            val down = e.type == androidx.compose.ui.input.key.KeyEventType.KeyDown
+            val n = e.nativeKeyEvent
+            when (e.key) {
+                // the remote's Menu key opens the same menu as a long press of OK (once per press)
+                androidx.compose.ui.input.key.Key.Menu -> if (onLongClick != null && down) { if (n.repeatCount == 0) onLongClick(); true } else false
+                // OK: one press, one action on the item it went down on; long press also by key repeat (see PressGate)
+                androidx.compose.ui.input.key.Key.DirectionCenter, androidx.compose.ui.input.key.Key.Enter,
+                androidx.compose.ui.input.key.Key.NumPadEnter ->
+                    if (!down && e.type != androidx.compose.ui.input.key.KeyEventType.KeyUp) false
+                    else when (gate.key(down, n.repeatCount, n.downTime, onLongClick != null)) {
+                        io.github.kmmarin.tvbro.data.PressGate.Act.PASS -> false
+                        io.github.kmmarin.tvbro.data.PressGate.Act.SWALLOW -> true
+                        io.github.kmmarin.tvbro.data.PressGate.Act.LONG -> { onLongClick?.invoke(); true }
+                    }
+                else -> false
+            }
         }
         .then(if (outline) Modifier.fieldLook(f, shape, rest) else Modifier.focusLook(f, shape, rest))
         .clip(shape)
-        .combinedClickable(interactionSource = src, indication = null, onLongClick = onLongClick, onClick = onClick)
+        .combinedClickable(interactionSource = src, indication = null,
+            onLongClick = onLongClick?.let { l -> { if (gate.timerLong()) l() } }, onClick = onClick)
 }
 
 /**

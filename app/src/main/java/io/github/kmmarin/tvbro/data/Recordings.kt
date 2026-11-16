@@ -44,7 +44,15 @@ object RecRepo {
     private var store: Store? = null
 
     @Synchronized fun init(ctx: Context) {
-        if (store == null) { store = Store(ctx.applicationContext); items = store!!.recordings(); DlRepo.attach(store!!) }
+        if (store == null) {
+            store = Store(ctx.applicationContext)
+            // first read in this process: no recording can be running yet (the service is not sticky and never resumes
+            // one), so a "recording" left by a killed process is over; it no longer holds one of the provider's streams
+            val l = store!!.recordings()
+            items = l.map { if (it.status == "recording") it.copy(status = "failed", note = "interrupted") else it }
+            if (items != l) store!!.saveRecordings(items)
+            DlRepo.attach(store!!)
+        }
     }
     fun get(id: String) = items.firstOrNull { it.id == id }
     @Synchronized fun put(r: Rec) { items = items.filter { it.id != r.id } + r; store?.saveRecordings(items) }

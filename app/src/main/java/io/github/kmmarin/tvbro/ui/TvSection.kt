@@ -68,8 +68,8 @@ private const val GROUPS_PER_SCREEN = 12
 private fun Preview(m: AppModel, ch: Channel?, modifier: Modifier) {
     val exo = rememberLiveExo(m)
     // (the volume is set by LiveVideo for whichever surface shows: sound with the picture)
-    LaunchedEffect(ch?.key, m.previewOn, m.streamsFull(), m.liveGen) {
-        if (ch == null || !m.previewOn || m.streamsFull()) return@LaunchedEffect // LiveVideo stops the player when hidden
+    LaunchedEffect(ch?.key, m.previewOn, m.streamsFull(ch?.sourceId), m.liveGen) {
+        if (ch == null || !m.previewOn || m.streamsFull(ch?.sourceId)) return@LaunchedEffect // LiveVideo stops the player when hidden
         // already playing this channel (back from full screen, catch-up or an alternate stream included): keep picture
         // and sound exactly as they are, no re-buffer
         if (m.liveKey == ch.key && m.liveUrl != null && exo.playbackState != androidx.media3.common.Player.STATE_IDLE) { exo.playWhenReady = true; return@LaunchedEffect }
@@ -94,7 +94,7 @@ private fun Preview(m: AppModel, ch: Channel?, modifier: Modifier) {
         onDispose { exo.removeListener(l) }
     }
     LaunchedEffect(m.previewRetry) {
-        if (m.previewRetry == 0 || ch == null || m.screen != Screen.LIST || !m.previewOn || m.streamsFull()) return@LaunchedEffect
+        if (m.previewRetry == 0 || ch == null || m.screen != Screen.LIST || !m.previewOn || m.streamsFull(ch?.sourceId)) return@LaunchedEffect
         delay(minOf(2000L * m.previewRetry, 15_000L))
         if (m.liveKey != null) return@LaunchedEffect // something else started a stream meanwhile
         m.liveUrl = ch.url; m.liveKey = ch.key
@@ -102,7 +102,7 @@ private fun Preview(m: AppModel, ch: Channel?, modifier: Modifier) {
     }
     Box(modifier.background(Color.Black).onGloballyPositioned { m.previewRect = it.boundsInRoot() }) {
         if (!m.previewOn) Text("Preview off", color = TextDim, modifier = Modifier.align(Alignment.Center))
-        else if (m.streamsFull()) Text("Preview paused: a recording uses the stream (limit ${m.maxStreams})", color = TextDim, fontSize = 12.sp, modifier = Modifier.align(Alignment.Center).padding(8.dp))
+        else if (m.streamsFull(ch?.sourceId)) Text("Preview paused: " + m.limitText(ch?.sourceId ?: ""), color = TextDim, fontSize = 12.sp, modifier = Modifier.align(Alignment.Center).padding(8.dp))
     }
 }
 

@@ -43,6 +43,7 @@ import kotlinx.coroutines.delay
 import io.github.kmmarin.tvbro.*
 import io.github.kmmarin.tvbro.R
 import io.github.kmmarin.tvbro.data.Channel
+import io.github.kmmarin.tvbro.data.MvRules
 
 // ONE player overlay for everything that plays full screen: live TV, catch-up, movies, episodes and recordings
 // (user 2026-11-14: "one consistent design everywhere"). The screens only own their player; the banner, the
@@ -234,6 +235,9 @@ fun PlayerOverlayHost(
                 val ok = e.key == Key.DirectionCenter || e.key == Key.Enter || e.key == Key.NumPadEnter || e.key == Key.ButtonA
                 // given up on a stream: OK tries again (from the banner, not from a row)
                 if (ok && onRetry != null && st.level <= BANNER) { if (rep == 0) onRetry(); return@onPreviewKeyEvent true }
+                // long press of OK (its first repeat) = the Menu key: the icon row, the player's extra options (it
+                // used to open the banner on the press and close it again on the repeats)
+                if (ok && rep > 0 && st.level <= BANNER) { if (rep == 1) { st.iconSel = 0; st.open(ICONS) }; return@onPreviewKeyEvent true }
                 if (st.interactive) {
                     val handled = when (st.level) {
                         BANNER -> when {
@@ -365,6 +369,7 @@ private fun overlayItems(m: AppModel, exo: ExoPlayer, pv: PlayerView?, kind: Pla
         val rec = m.activeRec(ch) != null
         l += OverlayItem(if (rec) R.drawable.ic_pm_stop else R.drawable.ic_nav_rec, if (rec) "Stop recording" else "Record", if (rec) "Recording" else "", RecRed) { pickRecord(m, ch) }
         l += OverlayItem(R.drawable.ic_pm_channels, "Channel list") { m.leavePlayer() }
+        l += OverlayItem(R.drawable.ic_pm_multiview, "Multiview", m.freeStreams(ch.sourceId).let { n -> if (n < 2) "needs 2 streams" else "up to ${minOf(n, MvRules.MAX_TILES)}" }) { m.openMultiview() }
     }
     if (kind == PlayKind.CATCHUP) l += OverlayItem(R.drawable.ic_pm_live, "Back to live", "Live") { m.catchup = null }
     if (kind.seekable) l += OverlayItem(R.drawable.ic_pm_restart, "Restart", "From the start") { exo.seekTo(0) }

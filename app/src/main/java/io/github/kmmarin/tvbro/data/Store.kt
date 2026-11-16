@@ -163,9 +163,21 @@ class Store(private val ctx: Context) {
         set(v) = sp.edit { putInt("vodHours", v) }
     fun searchHistory(): List<String> = SearchHistory.decode(sp.getString("searchHistory", ""))
     fun saveSearchHistory(l: List<String>) = sp.edit { putString("searchHistory", SearchHistory.encode(l)) }
-    var maxStreams: Int
-        get() = sp.getInt("maxStreams", 1)
-        set(v) = sp.edit { putInt("maxStreams", v) }
+    /**
+     * The old single "Maximum simultaneous streams" setting (builds up to 0.2.0), read once and removed: the stream
+     * limit is per provider now ([StreamLimits]). Null when it was never set or is gone already.
+     */
+    fun takeOldMaxStreams(): Int? {
+        if (!sp.contains("maxStreams")) return null
+        val v = sp.getInt("maxStreams", 1)
+        sp.edit(commit = true) { remove("maxStreams") }
+        return v
+    }
+    /** Stream limits per source id (encrypted, with the sources). */
+    fun streamLimits(): Map<String, StreamLimit> = try {
+        Json { ignoreUnknownKeys = true }.decodeFromString<Map<String, StreamLimit>>(readSecure("streamLimits", "{}") ?: "{}")
+    } catch (e: Exception) { emptyMap() }
+    fun saveStreamLimits(m: Map<String, StreamLimit>) = writeSecure("streamLimits", Json.encodeToString(m))
     fun lastRefresh(id: String): Long = sp.getLong("lr_$id", 0L)
     fun setLastRefresh(id: String, t: Long) = sp.edit { putLong("lr_$id", t) }
 
