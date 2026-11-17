@@ -190,6 +190,19 @@ object DebugHooks {
                 m.mvOpenForTest(chs, if (v.substringAfter(';', "") == "13") io.github.kmmarin.tvbro.data.MvLayout.ONE_PLUS_THREE else io.github.kmmarin.tvbro.data.MvLayout.GRID)
             }
         }
+        // `adb shell setprop debug.tvbro.vod <http url>`: plays that file as a movie (the seek / scrub keys without a
+        // provider's VOD); `none` leaves. Test files only, nothing is saved.
+        m.viewModelScope.launch {
+            var seen = prop("debug.tvbro.vod")
+            while (true) {
+                delay(300)
+                val v = prop("debug.tvbro.vod")
+                if (v == seen) continue
+                seen = v
+                if (v.startsWith("http")) { m.vodPlay = VodPlay("dbg|vod", v, "Test movie"); m.screen = Screen.VODPLAY }
+                else if (v == "none" && m.screen == Screen.VODPLAY) m.screen = Screen.LIST
+            }
+        }
         prop("debug.tvbro.epgbench").takeIf { it == "kotlin" || it == "core" }?.let { which ->
             val app = m.getApplication<android.app.Application>()
             Thread({ EpgBench.run(app, which) }, "tvbro-bench").start()

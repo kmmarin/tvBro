@@ -3,6 +3,16 @@
 All notable changes to tvBro. Versions follow `MAJOR.MINOR.PATCH`; the Android app's version code is
 `MAJOR * 10000 + MINOR * 100 + PATCH`.
 
+## 0.3.2 (Android)
+
+### Changed
+- **Seeking like streaming apps** (movies, episodes, recordings, catch-up): tap Left / Right to skip 10 s;
+  hold to scrub at 2x, which keeps going after you let go; press or hold the same way again for 4x, then 8x;
+  the other way slows down and stops below 2x. The bar shows the speed and where it is. The remote's
+  fast-forward / rewind keys step through the same speeds.
+- **OK** shows the banner; OK again pauses / plays (while scrubbing: plays from the new place). The banner
+  stays while paused. Hold OK, press Down or swipe up for the extra options.
+
 ## 0.3.1 (Android)
 
 ### Changed
