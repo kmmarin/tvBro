@@ -516,6 +516,20 @@ class AppModel(private val app: Application) : AndroidViewModel(app) {
         screen = Screen.LIST
     }
 
+    /** True while a live channel plays (full screen or in the TV screen's preview). */
+    val livePlaying: Boolean get() = current != null && liveUrl != null
+
+    /**
+     * Stops live playback: the preview goes dark and the stream closes (Back on the TV screen after leaving full screen).
+     * The playing channel stays focused, so OK on it starts it again.
+     */
+    fun stopLive() {
+        current?.let { c -> if (focusCh == null) focusCh = c }
+        current = null; catchup = null
+        liveExo?.let { it.stop(); it.clearMediaItems() }
+        liveUrl = null; liveKey = null
+    }
+
     fun play(c: Channel) {
         // parental lock, on every path (lists, guide, search, the "play" launch extra)
         if (isLocked(c)) { askPin { unlock(c); play(c) }; return }

@@ -99,7 +99,8 @@ private fun Modifier.parked(): Modifier = this
     .layout { _, _ -> layout(0, 0) {} }
 
 /**
- * Back: from another section to the TV screen; on the TV screen the guide back to now, then the groups, then the side
+ * Back: from another section to the TV screen; on the TV screen a channel playing in the preview stops first, then the
+ * guide back to now, then the groups, then the side
  * menu; from the side menu it leaves the app
  * (the TV screen is home). Screens and layers above handle Back first.
  * (off while a menu, dialog or programme pop-up is open: Back closes that and focus returns to the item)
@@ -108,7 +109,9 @@ private fun Modifier.parked(): Modifier = this
 private fun HomeBack(m: AppModel, railSel: SafeFocus, railFocused: State<Boolean>) {
     BackHandler(enabled = m.screen == Screen.LIST && m.menu == null && m.prompt == null && m.progMenu == null &&
         (m.section != Section.TV || !railFocused.value)) {
-        if (m.section != Section.TV) m.section = Section.TV else if (m.tvBack?.invoke() != true) railSel.request()
+        // a channel still playing in the preview (after Back from full screen): Back stops it first
+        if (m.section == Section.TV && m.livePlaying) m.stopLive()
+        else if (m.section != Section.TV) m.section = Section.TV else if (m.tvBack?.invoke() != true) railSel.request()
     }
 }
 

@@ -3,6 +3,18 @@
 All notable changes to tvBro. Versions follow `MAJOR.MINOR.PATCH`; the Android app's version code is
 `MAJOR * 10000 + MINOR * 100 + PATCH`.
 
+## 0.3.1 (Android)
+
+### Changed
+- **Touch everywhere**: on touch screens, tap a multiview tile to move the sound to it and hold a tile
+  for its options; hold anywhere in the player for the action icons (same as holding OK); swipe up or
+  tap the chevron under the banner to open its rows, swipe down to close them; settings changed with
+  left/right have on-screen ‹ › buttons.
+- The multiview sound marker is a speaker icon (the old note symbol was missing on some devices).
+
+### Fixed
+- Back on the small preview (after leaving full screen) now stops the video; the channel stays selected.
+
 ## 0.3.0 (Android)
 
 ### New

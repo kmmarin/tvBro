@@ -11,7 +11,7 @@ plugins {
 
 // Version: one place, overridable from CI with -Ptvbro.version=1.2.3 (the release tag without the "v").
 // versionCode = major * 10000 + minor * 100 + patch, so 0.1.0 -> 100, 1.2.3 -> 10203 (minor and patch stay below 100).
-val tvbroVersion = (findProperty("tvbro.version") as String?)?.removePrefix("v") ?: "0.3.0"
+val tvbroVersion = (findProperty("tvbro.version") as String?)?.removePrefix("v") ?: "0.3.1"
 fun versionCodeOf(v: String): Int {
     val p = v.substringBefore('-').split('.').map { it.toIntOrNull() ?: 0 } + listOf(0, 0, 0)
     require(p[1] < 100 && p[2] < 100) { "minor and patch must be below 100: $v" }

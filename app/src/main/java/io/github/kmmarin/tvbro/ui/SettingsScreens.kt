@@ -4,6 +4,8 @@ package io.github.kmmarin.tvbro.ui
 
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListScope
@@ -46,7 +48,18 @@ fun SettingRow(title: String, value: String, onLeft: (() -> Unit)? = null, onRig
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Text(title, color = TextMain, fontSize = 18.sp, modifier = Modifier.weight(1f))
+        // touch screens: ‹ and › step the value like Left / Right on the remote (finger-sized, not focusable)
+        if (onLeft != null) StepButton("‹", onLeft)
         Text(value, color = valueColor, fontSize = 18.sp)
+        if (onRight != null) StepButton("›", onRight)
+    }
+}
+
+@Composable
+private fun StepButton(label: String, onTap: () -> Unit) {
+    Box(Modifier.padding(horizontal = 4.dp).size(44.dp).background(IconRest, androidx.compose.foundation.shape.CircleShape)
+        .pointerInput(onTap) { detectTapGestures { onTap() } }, contentAlignment = Alignment.Center) {
+        Text(label, color = TextMain, fontSize = 24.sp)
     }
 }
 

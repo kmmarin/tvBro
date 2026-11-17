@@ -1,0 +1,4 @@
+tvBro 0.3.1
+- Touch: tap a multiview tile for its sound, hold for options; hold the player for the action icons
+- Touch: swipe up / tap the chevron to open the banner rows; ‹ › buttons for left/right settings
+- Back on the small preview stops the video
