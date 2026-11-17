@@ -1,0 +1,3 @@
+tvBro 0.3.2
+- Tap Left/Right to skip 10 s; hold to scrub at 2x, again for 4x and 8x, the other way to slow down
+- OK shows the banner, OK again pauses / plays; Down or swipe up for the extra options

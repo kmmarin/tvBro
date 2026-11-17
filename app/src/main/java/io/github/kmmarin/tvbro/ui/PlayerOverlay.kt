@@ -37,6 +37,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.media3.common.Player
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.ui.PlayerView
 import kotlinx.coroutines.delay
@@ -52,8 +53,9 @@ import io.github.kmmarin.tvbro.data.MvRules
 //
 // Keys (focus stays on the player the whole time, so every row opens in the same frame and playback never stops):
 //  - nothing shown: OK shows the banner; live TV: Up / Down = channel above / below (as in the guide list),
-//    Left = channel list, Right = TV guide; everything else: Left / Right seek (hold to speed up), Up / Down nothing.
-//  - banner: Down = quick-access row (live TV) or icon row, Up / OK hide it.
+//    Left = channel list, Right = TV guide; everything else: Left / Right tap = skip 10 s, hold = scrub 2x / 4x / 8x
+//    (see "Scrubbing" in the host), Down = icon row, Up nothing.
+//  - banner: Down = quick-access row (live TV) or icon row, Up hides it; OK hides it (live TV) or pauses / plays.
 //  - a row: Left / Right choose, OK runs, Down = next row, Up = previous row. Back closes the overlay, never playback.
 //  - media keys always: play/pause, play, pause, fast-forward / rewind (seek; live TV: Rewind = last channel),
 //    next / previous (channel or episode).
@@ -154,7 +156,8 @@ fun PlayerOverlayHost(
 
     // auto-hide: 5 s when shown by itself, 8 s after the last key in a row; never while one of its choosers is open
     val popup = m.menu != null || m.prompt != null
-    AutoHide(st, popup || problem != null)
+    // (and never while scrubbing or paused: the bar shows where it is)
+    AutoHide(st, popup || problem != null || poll.scrub != 0 || (kind.seekable && !poll.playing))
 
     // the recent channels: kept in memory, logos warmed into the logo cache before the row is ever opened
     val byKey = remember(m.shown) { m.shown.associateBy { it.key } }
@@ -196,7 +199,100 @@ fun PlayerOverlayHost(
     }
     val below = if (tiles.isEmpty()) ICONS else QUICK
 
-    BackHandler { if (st.interactive) st.hide() else onLeave() }
+    // Scrubbing (movies, episodes, recordings, catch-up; user 2026-11-16): hold Left / Right = 2x that way and it
+    // keeps going after the key is let go; press (or hold) the same way again = 4x, then 8x; the other way = slower,
+    // and below 2x it stops. A plain press (no hold) skips 10 s. OK / Play plays from the new place. The video pauses
+    // and is seeked about every 0.7 s so the picture follows; the bar shows the scrub position.
+    val ps = remember { PressState() }
+    fun dbg(what: String) { if (io.github.kmmarin.tvbro.BuildConfig.DEBUG) android.util.Log.i("tvbro-seek", "$what scrub=${poll.scrub} pos=${exo.currentPosition / 1000}s scrubPos=${poll.scrubPos / 1000}s playing=${exo.playWhenReady} level=${st.level} passive=${st.passive}") }
+    fun endScrub(play: Boolean?) {
+        if (poll.scrub == 0) return
+        val p = poll.scrubPos
+        poll.scrub = 0
+        exo.seekTo(p)
+        exo.playWhenReady = play ?: ps.wasPlaying
+        poll.read(exo); st.showPassive(); st.touch(); dbg("end")
+    }
+    fun scrubStep(dir: Int) {
+        val s = poll.scrub
+        when {
+            s == 0 -> { ps.wasPlaying = exo.playWhenReady; poll.scrubPos = exo.currentPosition; exo.playWhenReady = false; poll.scrub = 2 * dir }
+            (s > 0) == (dir > 0) -> poll.scrub = (s * 2).coerceIn(-MAX_SCRUB, MAX_SCRUB)
+            kotlin.math.abs(s) <= 2 -> { endScrub(null); return }
+            else -> poll.scrub = s / 2
+        }
+        poll.read(exo); st.showPassive(); st.touch(); dbg("step $dir")
+    }
+    LaunchedEffect(poll.scrub) {
+        val s = poll.scrub
+        if (s == 0) return@LaunchedEffect
+        var sinceSeek = 0L
+        while (true) {
+            delay(SCRUB_TICK_MS)
+            val d = exo.duration
+            val p = poll.scrubPos + s * SCRUB_MS_PER_X * SCRUB_TICK_MS / 1000
+            if (p <= 0 || (d > 0 && p >= d - 2_000)) { poll.scrubPos = if (p <= 0) 0 else d - 2_000; endScrub(null); return@LaunchedEffect }
+            poll.scrubPos = p; poll.pos = p
+            sinceSeek += SCRUB_TICK_MS
+            if (sinceSeek >= 700 && (exo.playbackState != Player.STATE_BUFFERING || sinceSeek >= 2_000)) { exo.seekTo(p); sinceSeek = 0; dbg("tick") }
+        }
+    }
+    /** Seekable playback, banner or nothing shown: Left / Right (tap = skip, hold = scrub), OK (tap, hold), FF / RW. */
+    fun seekKeys(e: KeyEvent, ok: Boolean, rep: Int): Boolean {
+        val down = e.type == KeyEventType.KeyDown
+        val up = e.type == KeyEventType.KeyUp
+        val code = e.nativeKeyEvent.keyCode
+        when (code) {
+            AKeyEvent.KEYCODE_MEDIA_FAST_FORWARD, AKeyEvent.KEYCODE_MEDIA_REWIND -> {
+                if (down && rep == 0) scrubStep(if (code == AKeyEvent.KEYCODE_MEDIA_FAST_FORWARD) 1 else -1)
+                return down || up
+            }
+            AKeyEvent.KEYCODE_MEDIA_PLAY_PAUSE, AKeyEvent.KEYCODE_MEDIA_PLAY, AKeyEvent.KEYCODE_MEDIA_PAUSE -> if (poll.scrub != 0) {
+                if (down && rep == 0) endScrub(code != AKeyEvent.KEYCODE_MEDIA_PAUSE)
+                return down || up
+            }
+        }
+        if (st.level > BANNER) return false // a row is open: its own keys
+        val dir = when (e.key) { Key.DirectionLeft -> -1; Key.DirectionRight -> 1; else -> 0 }
+        if (dir != 0) {
+            if (down) {
+                if (rep == 0) { ps.dir = dir; ps.held = false }
+                else if (!ps.held && ps.dir == dir) { ps.held = true; scrubStep(dir) }
+                return true
+            }
+            if (up) {
+                if (ps.dir == dir && !ps.held) { if (poll.scrub == 0) { seek(dir < 0, 0); dbg("skip $dir") } else scrubStep(dir) }
+                ps.dir = 0
+                return true
+            }
+            return false
+        }
+        if (ok && onRetry == null) {
+            if (down) {
+                if (rep == 0) { ps.ok = true; ps.okHeld = false }
+                // held: the extra options (icon row), like before
+                else if (ps.ok && !ps.okHeld) { ps.okHeld = true; endScrub(null); st.iconSel = 0; st.open(ICONS) }
+                return true
+            }
+            if (up) {
+                // first press shows the banner; a press while it shows = pause / play
+                if (ps.ok && !ps.okHeld) when {
+                    poll.scrub != 0 -> { endScrub(true); st.open(BANNER) }
+                    st.level == HIDDEN -> st.open(BANNER)
+                    else -> { playPause(null); st.open(BANNER) }
+                }
+                dbg("ok")
+                ps.ok = false
+                return true
+            }
+            return false
+        }
+        // Up / Down end scrubbing (playing from there), then do what they always do
+        if (down && poll.scrub != 0 && (e.key == Key.DirectionUp || e.key == Key.DirectionDown)) endScrub(null)
+        return false
+    }
+
+    BackHandler { if (poll.scrub != 0) endScrub(null) else if (st.interactive) st.hide() else onLeave() }
     val fr = remember { FocusRequester() }
     LaunchedEffect(popup, blocked) { if (!popup && !blocked) runCatching { fr.requestFocus() } }
 
@@ -236,9 +332,12 @@ fun PlayerOverlayHost(
             }
             .focusRequester(fr).countFocus().focusable()
             .onPreviewKeyEvent { e ->
-                if (e.type != KeyEventType.KeyDown || blocked || popup) return@onPreviewKeyEvent false
+                if (blocked || popup) return@onPreviewKeyEvent false
                 val code = e.nativeKeyEvent.keyCode
                 val rep = e.nativeKeyEvent.repeatCount
+                val okKey = e.key == Key.DirectionCenter || e.key == Key.Enter || e.key == Key.NumPadEnter || e.key == Key.ButtonA
+                if (kind.seekable && seekKeys(e, okKey, rep)) return@onPreviewKeyEvent true
+                if (e.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
                 // media keys, whatever is shown
                 when (code) {
                     AKeyEvent.KEYCODE_MEDIA_PLAY_PAUSE -> { playPause(null); return@onPreviewKeyEvent true }
@@ -297,7 +396,8 @@ fun PlayerOverlayHost(
                     ok -> { if (rep == 0) st.open(BANNER); true }
                     e.key == Key.Menu -> { st.iconSel = 0; st.open(ICONS); true }
                     e.key == Key.DirectionUp -> { if (kind.zaps) m.zap(-1); true }
-                    e.key == Key.DirectionDown -> { if (kind.zaps) m.zap(1); true }
+                    // Down: next channel (live, catch-up); otherwise the extra options, like Down from the banner
+                    e.key == Key.DirectionDown -> { if (kind.zaps) m.zap(1) else { st.iconSel = 0; st.open(ICONS) }; true }
                     kind.seekable && e.key == Key.DirectionLeft -> { seek(true, rep); true }
                     kind.seekable && e.key == Key.DirectionRight -> { seek(false, rep); true }
                     e.key == Key.DirectionLeft -> { st.hide(); m.leavePlayer(); true }
@@ -366,10 +466,22 @@ private class PlayerPoll {
     var res by mutableStateOf("")
     var playing by mutableStateOf(true)
     var tick by mutableIntStateOf(0)
+    /** Scrubbing (hold Left / Right): the speed shown (-8, -4, -2, 2, 4, 8; 0 = not scrubbing) and where it is. */
+    var scrub by mutableIntStateOf(0)
+    var scrubPos by mutableLongStateOf(0L)
     fun read(exo: ExoPlayer) {
-        pos = exo.currentPosition; dur = exo.duration.coerceAtLeast(0); res = resolutionLabel(exo); playing = exo.playWhenReady; tick++
+        pos = if (scrub != 0) scrubPos else exo.currentPosition
+        dur = exo.duration.coerceAtLeast(0); res = resolutionLabel(exo); playing = exo.playWhenReady; tick++
     }
 }
+
+/** Key presses in progress (Left / Right / OK): tap or hold is only known when the key comes up or repeats. */
+private class PressState { var dir = 0; var held = false; var ok = false; var okHeld = false; var wasPlaying = true }
+
+private const val MAX_SCRUB = 8
+/** Scrub speed: each "x" moves 10 s of video per second (2x = 20 s/s, 8x = 80 s/s). */
+private const val SCRUB_MS_PER_X = 10_000L
+private const val SCRUB_TICK_MS = 200L
 
 private fun seekBy(exo: ExoPlayer, ms: Long) { exo.seekTo((exo.currentPosition + ms).coerceAtLeast(0)) }
 
@@ -490,12 +602,19 @@ private fun Banner(m: AppModel, kind: PlayKind, now: Long, poll: PlayerPoll, pro
                 if (chName != null) Text("    $chName", color = TextMain, fontSize = 15.sp, fontWeight = FontWeight.Bold, maxLines = 1,
                     overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false))
                 if (res.isNotEmpty()) Chip(res, Accent)
-                if (!poll.playing) Chip("Paused", TextMain)
+                if (!poll.playing && poll.scrub == 0) Chip("Paused", TextMain)
                 if (recording) Chip("● REC", RecRed)
             }
         }
     }
     if (problem != null) Text(problem, color = ProblemAmber, fontSize = 16.sp, maxLines = 2, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 10.dp))
+    // scrubbing: the direction and speed over the bar ("<< 2x" / "2x >>")
+    if (poll.scrub != 0) Row(Modifier.fillMaxWidth().padding(top = 8.dp), horizontalArrangement = Arrangement.Center, verticalAlignment = Alignment.CenterVertically) {
+        val back = poll.scrub < 0
+        if (back) Image(painterResource(R.drawable.ic_pm_ffwd), null, Modifier.size(28.dp).graphicsLayer { scaleX = -1f }, colorFilter = ColorFilter.tint(TextMain))
+        Text("${kotlin.math.abs(poll.scrub)}x", color = TextMain, fontSize = 20.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(horizontal = 6.dp))
+        if (!back) Image(painterResource(R.drawable.ic_pm_ffwd), null, Modifier.size(28.dp), colorFilter = ColorFilter.tint(TextMain))
+    }
     if (progress != null) ProgressLine(progress, Modifier.padding(top = 10.dp))
 }
 
