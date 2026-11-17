@@ -200,14 +200,39 @@ fun PlayerOverlayHost(
     val fr = remember { FocusRequester() }
     LaunchedEffect(popup, blocked) { if (!popup && !blocked) runCatching { fr.requestFocus() } }
 
-    val swipeOut = with(androidx.compose.ui.platform.LocalDensity.current) { 120.dp.toPx() }
+    // touch: the rows below the banner, as Down / Up on the remote
+    fun openNext() {
+        when (st.level) {
+            HIDDEN, BANNER -> { if (below == QUICK) st.quickSel = 0 else st.iconSel = 0; st.open(below) }
+            QUICK -> { st.iconSel = 0; st.open(ICONS) }
+            else -> st.touch()
+        }
+    }
+    fun closeRow(): Boolean = when {
+        !st.interactive -> false
+        st.level == ICONS -> { st.open(if (tiles.isEmpty()) BANNER else QUICK); true }
+        st.level == QUICK -> { st.open(BANNER); true }
+        else -> false
+    }
+    val density = androidx.compose.ui.platform.LocalDensity.current
+    val swipeOut = with(density) { 120.dp.toPx() }
+    val swipeUp = with(density) { 48.dp.toPx() }
     Box(
         modifier.fillMaxSize()
-            // touch screens: a tap shows / hides the banner, a swipe down leaves like Back
-            .pointerInput(Unit) { detectTapGestures(onTap = { if (st.interactive) st.hide() else st.open(BANNER) }) }
-            .pointerInput(Unit) {
+            // touch screens: a tap shows / hides the banner; swipe up opens the next row (like Down); swipe down closes
+            // the open row, or leaves like Back when only the banner shows
+            // a long press = the extra options (the icon row), like a long OK / Menu on the remote
+            .pointerInput(Unit) { detectTapGestures(
+                onTap = { if (st.interactive) st.hide() else st.open(BANNER) },
+                onLongPress = { st.iconSel = 0; st.open(ICONS) }) }
+            .pointerInput(below, tiles.isEmpty()) {
                 var dy = 0f
-                detectVerticalDragGestures(onDragStart = { dy = 0f }, onDragEnd = { if (dy > swipeOut) { st.hide(); onLeave() } }) { _, d -> dy += d }
+                detectVerticalDragGestures(onDragStart = { dy = 0f }, onDragEnd = {
+                    when {
+                        dy < -swipeUp -> openNext()
+                        dy > swipeOut -> if (!closeRow()) { st.hide(); onLeave() }
+                    }
+                }) { _, d -> dy += d }
             }
             .focusRequester(fr).countFocus().focusable()
             .onPreviewKeyEvent { e ->
@@ -297,9 +322,12 @@ fun PlayerOverlayHost(
             Column(Modifier.shownIf(withBanner).enterAnim(withBanner)) { Banner(m, kind, now, poll, problem) }
             if (tiles.isNotEmpty()) Box(Modifier.shownIf(st.level == QUICK, warm).enterAnim(st.level == QUICK)) { QuickRow(tiles, st) { st.quickSel = it; tiles[it].onClick() } }
             Box(Modifier.shownIf(st.level == ICONS, warm).enterAnim(st.level == ICONS)) { IconRow(rowItems, st) { st.iconSel = it; itemsNow.value.getOrNull(it)?.onClick?.invoke() } }
-            // more rows below
-            Box(Modifier.fillMaxWidth().height(18.dp), contentAlignment = Alignment.Center) {
-                Image(painterResource(R.drawable.ic_pm_more), "More below", Modifier.size(22.dp).shownIf(withBanner), colorFilter = ColorFilter.tint(TextDim))
+            // more rows below: also a touch target (a finger-sized area; a tap opens the next row, like Down)
+            Box(Modifier.fillMaxWidth().height(if (withBanner) 40.dp else 18.dp), contentAlignment = Alignment.Center) {
+                Box(Modifier.shownIf(withBanner).size(width = 96.dp, height = 40.dp).pointerInput(below) { detectTapGestures { openNext() } },
+                    contentAlignment = Alignment.Center) {
+                    Image(painterResource(R.drawable.ic_pm_more), "More below", Modifier.size(28.dp), colorFilter = ColorFilter.tint(TextDim))
+                }
             }
         }
     }

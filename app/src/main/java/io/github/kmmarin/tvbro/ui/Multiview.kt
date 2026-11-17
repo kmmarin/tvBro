@@ -6,6 +6,8 @@ package io.github.kmmarin.tvbro.ui
 
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.foundation.border
 import androidx.compose.foundation.focusable
 import androidx.compose.foundation.layout.*
@@ -90,7 +92,7 @@ fun MultiviewScreen(m: AppModel) {
             }
         }
         if (hint) {
-            Text("OK: options  ·  Channel up / down: change  ·  Back: full screen", color = TextMain, fontSize = 15.sp,
+            Text("OK or hold: options  ·  Tap: sound  ·  Channel up / down: change  ·  Back: full screen", color = TextMain, fontSize = 15.sp,
                 modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 18.dp).background(Color(0xCC000000), RoundedCornerShape(8.dp)).padding(horizontal = 14.dp, vertical = 8.dp))
         }
     }
@@ -140,10 +142,20 @@ private fun MvTile(m: AppModel, slot: Int, c: Channel, focused: Boolean, maxH: I
         val now = System.currentTimeMillis() / 1000
         val prog = remember(c.key, now / 60) { m.epg.nowNext(c, now).first?.title }
         Column(Modifier.align(Alignment.BottomStart).fillMaxWidth().background(Color(0x99000000)).padding(horizontal = 8.dp, vertical = 4.dp)) {
-            Text((if (focused) "♪  " else "") + c.name, color = TextMain, fontSize = 15.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            // the sound mark is the app's speaker icon (a "♪" character drew as an empty box on the Peloton's font)
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                if (focused) androidx.compose.foundation.Image(androidx.compose.ui.res.painterResource(io.github.kmmarin.tvbro.R.drawable.ic_pm_audio),
+                    "Sound", Modifier.padding(end = 6.dp).size(16.dp), colorFilter = androidx.compose.ui.graphics.ColorFilter.tint(Accent))
+                Text(c.name, color = TextMain, fontSize = 15.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            }
             if (prog != null) Text(prog, color = TextDim, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
         }
         if (failed) Text("Not playing", color = TextDim, fontSize = 14.sp, modifier = Modifier.align(Alignment.Center))
+        // touch: a tap selects the tile (its sound comes on), a long press opens its options (like OK on the remote).
+        // A layer over the video, so the player view never takes the touch.
+        Box(Modifier.matchParentSize().pointerInput(slot) {
+            detectTapGestures(onTap = { m.mvFocus = slot }, onLongPress = { m.mvFocus = slot; tileMenu(m, slot) })
+        })
     }
 }
 
