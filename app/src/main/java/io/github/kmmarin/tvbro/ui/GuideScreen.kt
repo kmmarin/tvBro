@@ -271,6 +271,8 @@ private fun Cell(
         verticalArrangement = Arrangement.Center,
     ) {
         Text(title, color = if (past) TextDim else TextMain, fontSize = 14.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
-        if (p != null) Text(hhmm(p.start), color = TextDim, fontSize = 11.sp, maxLines = 1)
+        // on now: its progress in place of the start time (the header shows the times)
+        if (live && p != null) GuideNowBar(p.start, p.stop, now)
+        else if (p != null) Text(hhmm(p.start), color = TextDim, fontSize = 11.sp, maxLines = 1)
     }
 }

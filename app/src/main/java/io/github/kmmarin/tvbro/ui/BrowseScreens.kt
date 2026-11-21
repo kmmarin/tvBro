@@ -193,7 +193,7 @@ fun Card(m: AppModel, width: Dp, fav: (() -> Unit)?, onFocus: () -> Unit = {}, l
     )
 }
 
-/** The app's one progress line (cards, TV screen header, player banner, quick-access tiles). */
+/** The app's one progress line (cards, TV screen header, guide programme on now, player banner, quick-access tiles). */
 @Composable
 fun ProgressLine(f: Float, modifier: Modifier = Modifier, color: Color = Accent) {
     Box(modifier.fillMaxWidth().height(4.dp).background(Color(0x40FFFFFF))) { Box(Modifier.fillMaxWidth(f.coerceIn(0f, 1f)).height(4.dp).background(color)) }
@@ -418,7 +418,7 @@ fun PosterTile(m: AppModel, item: VodItem, mod: Modifier) {
 
 @Composable
 fun BrowseScreen(m: AppModel) {
-    val items = m.vodFiltered
+    val items = m.vodShown
     val cats = listOf(CAT_MYLIST, CAT_RECENT, VOD_ALL) + m.vodCatNames
     val gridFr = remember { SafeFocus() }
     val contFr = remember { SafeFocus() }
@@ -470,7 +470,6 @@ fun BrowseScreen(m: AppModel) {
     Row(Modifier.fillMaxSize()) {
         LazyColumn(Modifier.width(210.dp).fillMaxHeight().padding(12.dp).enterAt(catSel)) {
             item { SectionTitle(if (shows) "Shows" else "Movies", Modifier.padding(bottom = 8.dp)) }
-            item { TvField("Search", m.vodQuery, { m.vodQuery = it }) }
             items(cats) { g ->
                 val sel = g == m.vodCat
                 val label = vodCatLabel(g, shows)

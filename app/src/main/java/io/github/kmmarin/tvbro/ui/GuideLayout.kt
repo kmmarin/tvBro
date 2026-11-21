@@ -2,7 +2,12 @@
 // SPDX-License-Identifier: Apache-2.0
 package io.github.kmmarin.tvbro.ui
 
-/** One shared time scale for the guide ruler, programme blocks and the "now" line. All times are epoch seconds. */
+import androidx.compose.foundation.layout.padding
+import androidx.compose.runtime.Composable
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.dp
+
+/** One shared time scale for the guide ruler and programme blocks. All times are epoch seconds. */
 object GuideLayout {
     const val WINDOW_MIN = 180 // 3 h visible
     private const val WINDOW_SEC = WINDOW_MIN * 60L
@@ -43,3 +48,13 @@ object GuideLayout {
 
     fun tickX(t: Long, winStart: Long, dpm: Float): Float = (t - winStart) / 60f * dpm
 }
+
+/**
+ * The guide's "now" marker (TV screen grid and 24 h guide): the programme on now shows how much of it has aired
+ * inside its own block, with the app's one [ProgressLine] under the title, where other blocks show their start time
+ * (nothing runs down the page; user 2026-11-21). The share is of the whole programme, the same as the header's bar,
+ * also for a block cut at the window's start ("<").
+ */
+@Composable
+fun GuideNowBar(start: Long, stop: Long, now: Long) =
+    ProgressLine(io.github.kmmarin.tvbro.data.ProgTime.progress(start, stop, now), Modifier.padding(top = 6.dp))

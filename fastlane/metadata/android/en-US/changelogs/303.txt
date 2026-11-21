@@ -1,0 +1,4 @@
+tvBro 0.3.3
+- Movies and Shows use the global Search only (no separate search box that kept filtering)
+- Guide: the programme on now shows its progress inside its own box; no more full-height now line
+- Fire TV: fixed the broken home-screen tile (PNG icon and banner)
