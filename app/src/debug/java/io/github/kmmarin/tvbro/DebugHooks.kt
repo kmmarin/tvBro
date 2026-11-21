@@ -89,7 +89,7 @@ object DebugHooks {
         m.screen == Screen.SETTINGS -> "settings page=${m.settingsSec}"
         m.screen != Screen.LIST -> "screen ${m.screen}"
         m.section == Section.MOVIES || m.section == Section.SHOWS ->
-            "browse ${m.section} cats=${m.vodCatNames.size} items=${m.vodFiltered.size} msg=${m.vodMsg.isNotEmpty()} peek=${m.peek != null}"
+            "browse ${m.section} cats=${m.vodCatNames.size} items=${m.vodShown.size} msg=${m.vodMsg.isNotEmpty()} peek=${m.peek != null}"
         m.section == Section.SEARCH -> "search q=${m.searchQ.length} results=${m.searchView?.let { if (it.q == m.searchQ) it.movies.size + it.series.size + it.channels.size + it.progs.size else -1 } ?: -1}"
         m.section == Section.MYLIST -> "mylist my=${m.mySnaps.size} hist=${m.histSnaps.size}"
         else -> "section ${m.section}"

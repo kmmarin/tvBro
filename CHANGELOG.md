@@ -3,6 +3,18 @@
 All notable changes to tvBro. Versions follow `MAJOR.MINOR.PATCH`; the Android app's version code is
 `MAJOR * 10000 + MINOR * 100 + PATCH`.
 
+## 0.3.3 (Android)
+
+### Changed
+- **One search**: Movies and Shows no longer have their own search box (it could keep an old query and
+  filter the list); the global Search is the only search.
+- **Guide**: the full-height "now" line is gone. The programme on now shows how far along it is with a
+  progress bar inside its own box, the same bar as the info panel.
+
+### Fixed
+- **Fire TV**: the home-screen tile showed a broken image; the launcher icon and banner now also come as
+  PNG for devices that can't draw the vector versions (Android before 8.0).
+
 ## 0.3.2 (Android)
 
 ### Changed

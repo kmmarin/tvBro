@@ -460,9 +460,6 @@ fun TvSection(m: AppModel) {
                             TvRow(m, ch, i, now, winStart, winEnd, dpm, shift, ensure, t, chFocus, target, nowFocus, toNow, toGroups, numW, focusBack)
                         }
                     }
-                    Box(Modifier.padding(start = TV_LABEL).fillMaxSize().clipToBounds()) {
-                        if (now in winStart..winEnd) Box(Modifier.offset(GuideLayout.tickX(now, winStart, dpm).dp, 0.dp).width(2.dp).fillMaxHeight().background(Accent.copy(alpha = 0.85f)))
-                    }
                 }
             }
         }
@@ -491,7 +488,7 @@ private fun TvHeader(m: AppModel, now: Long, list: List<Channel>, t: (Long) -> S
                 io.github.kmmarin.tvbro.data.EpisodeNum.line(prog.ep, prog.sub)?.let { Text(it, color = TextMain.copy(alpha = 0.85f), fontSize = 15.sp, maxLines = 1, overflow = TextOverflow.Ellipsis) }
                 val live = prog.start <= now && prog.stop > now
                 Text(t(prog.start) + " - " + t(prog.stop) + if (live) "   ${(prog.stop - now) / 60} min left" else if (prog.stop <= now) "   (finished)" else "", color = TextDim, fontSize = 14.sp, modifier = Modifier.padding(top = 3.dp))
-                if (live) ProgressLine((now - prog.start).toFloat() / (prog.stop - prog.start).coerceAtLeast(1), Modifier.padding(top = 5.dp))
+                if (live) ProgressLine(io.github.kmmarin.tvbro.data.ProgTime.progress(prog.start, prog.stop, now), Modifier.padding(top = 5.dp))
                 prog.desc?.let { Text(it, color = TextDim, fontSize = 12.sp, maxLines = 4, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 5.dp)) }
             }
         }
@@ -675,7 +672,9 @@ private fun TvRow(
                             verticalArrangement = Arrangement.Center,
                         ) {
                             Text((if (p.start < winStart) "< " else "") + p.title, color = if (past) TextDim else TextMain, fontSize = 14.sp, maxLines = 1, overflow = TextOverflow.Clip, softWrap = false)
-                            if (b.second > 90f) Text(t(p.start), color = TextDim, fontSize = 11.sp, maxLines = 1, softWrap = false)
+                            // on now: its progress in place of the start time (the header shows the times)
+                            if (live) GuideNowBar(p.start, p.stop, now)
+                            else if (b.second > 90f) Text(t(p.start), color = TextDim, fontSize = 11.sp, maxLines = 1, softWrap = false)
                         }
                     }
                     cursor = minOf(p.stop, winEnd)

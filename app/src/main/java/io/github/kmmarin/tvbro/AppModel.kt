@@ -1303,7 +1303,6 @@ class AppModel(private val app: Application) : AndroidViewModel(app) {
     var vodItems by mutableStateOf<List<VodItem>>(emptyList())
     var vodCatNames by mutableStateOf<List<String>>(emptyList())
     var vodCat by mutableStateOf(CAT_MYLIST)
-    var vodQuery by mutableStateOf("")
     var vodMsg by mutableStateOf("")
     var detail by mutableStateOf<VodItem?>(null)
     var detailInfo by mutableStateOf<VodDetail?>(null)
@@ -1315,14 +1314,13 @@ class AppModel(private val app: Application) : AndroidViewModel(app) {
     private var catIndex: Map<String, List<Pair<Source, String>>> = emptyMap()
     private var vodJob: kotlinx.coroutines.Job? = null
 
-    val vodFiltered: List<VodItem> by derivedStateOf {
-        val q = vodQuery.trim().lowercase()
-        val base = when (vodCat) {
+    /** The selected category's titles (locked categories hidden). Search is the global Search section only. */
+    val vodShown: List<VodItem> by derivedStateOf {
+        when (vodCat) {
             CAT_MYLIST -> mySnaps.filter { (it.kind == "series") == vodSeries }
             CAT_RECENT -> histSnaps.filter { (it.kind == "series") == vodSeries }
             else -> vodItems
         }.filter { it.category !in prefs.locked || it.category in unlocked }
-        if (q.isEmpty()) base else base.filter { it.name.lowercase().contains(q) }
     }
 
     fun refreshLists() {
