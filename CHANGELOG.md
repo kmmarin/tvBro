@@ -25,6 +25,9 @@ All notable changes to tvBro. Versions follow `MAJOR.MINOR.PATCH`; the Android a
   passwords: keyboards no longer learn or suggest them, and the Fire TV keyboard shows them in its password
   font with its Hide Password key (it treated them as ordinary text before).
 
+### Security
+- Rust core: `url` 2.5.9 (RUSTSEC-2026-0592, stack overflow on nested `blob:` URLs) and `form_urlencoded` 1.2.3.
+
 ## 0.3.3 (Android)
 
 ### Changed
