@@ -90,8 +90,8 @@ Every Fire TV with Fire OS 6 or newer works (Android 7.1 and later, including 32
 - **Manually**: install the newer APK over the old one, as above. Your settings and logins stay.
 
 If an update fails with "App not installed" / "package conflicts": the installed copy was signed with
-a different key (for example a self-built or test version). Back up in Settings, uninstall tvBro,
-install the release APK, restore the backup, then add your login again.
+a different key (for example a self-built or test version). Export a backup in Settings (Channels and groups > Backup),
+uninstall tvBro, install the release APK and import the backup: sources with their logins come back too.
 
 ## F-Droid
 

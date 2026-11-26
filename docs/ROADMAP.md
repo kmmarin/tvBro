@@ -44,3 +44,6 @@ Deferred: Room/SQLite storage with paging for catalogues and EPG (current storag
 ## Status (2026-11-11)
 Done on Android: items 1-5 of the TV test feedback (My list grid, guide hides the past, search redesign, in-app reminders, long-press Back), catalogues in SQLite with paging, episode-code line, per-type refresh schedules, FTS4 search index built during sync, keep-old-data with retry backoff, Settings > Sync, channels and groups editor, stream limit.
 Remaining: Google TV global search registration (content provider + searchable), stream limit capped by the Xtream account's `max_connections`, glass look (n/a on Android, see docs/PARITY.md), parity gaps listed in docs/PARITY.md for Web and Desktop (FTS search, episode codes, sync cards on desktop).
+
+## Status (2026-11-26)
+Done on Android (0.3.4): encrypted backup / restore of everything incl. logins (Settings > Channels and groups > Backup); format and merge rules in shared `FullBackup` (unit-tested). Desktop and web still have their own backups without logins.

@@ -1,0 +1,3 @@
+tvBro 0.3.4
+- Encrypted backup: export sources with logins, favourites, layout, PIN, settings and watch progress to one passphrase-protected file
+- Import it on another TV or after a reinstall (adds to what is there)

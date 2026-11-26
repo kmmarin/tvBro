@@ -25,7 +25,16 @@ private val RESCUE_KEYS = setOf(
 class MainActivity : ComponentActivity() {
     private val model: AppModel by viewModels()
 
+    /** Settings > Backup > Import: the system file picker (not every TV has one; then the backup folder is used). */
+    private val pickBackup = registerForActivityResult(androidx.activity.result.contract.ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri != null) model.importFromUri(uri)
+    }
+
     override fun onSearchRequested(): Boolean { model.openSearch(); return true }
+
+    private val pickFn: () -> Boolean = { try { pickBackup.launch(arrayOf("*/*")); true } catch (e: android.content.ActivityNotFoundException) { false } }
+
+    override fun onDestroy() { if (model.pickBackupFile === pickFn) model.pickBackupFile = null; super.onDestroy() }
 
     // Long-press Back in the TV / guide view: straight to full-screen playback. Detected by key repeat, with a timer
     // as fallback for remotes that do not repeat; the release after a long press is swallowed so it is not a short Back.
@@ -96,6 +105,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        model.pickBackupFile = pickFn
         if (applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE != 0) {
             android.os.StrictMode.setThreadPolicy(android.os.StrictMode.ThreadPolicy.Builder().detectDiskReads().detectDiskWrites().detectNetwork().penaltyLog().build())
             // guide latency probe and key injector (debug builds only; see Lat):

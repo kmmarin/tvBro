@@ -36,7 +36,7 @@ programmes, films and generated artwork), never real content.
 - Several playlists at once: enable, disable, reorder, remove.
 - **Add a source from your phone**: the TV shows a QR code and a one-time code; a small page on your
   phone (same Wi-Fi, only while that screen is open) sends the login to the TV. No typing on the remote.
-- Logins are stored encrypted on the device and never logged or shown in backups.
+- Logins are stored encrypted on the device and never logged; the Android backup carries them only inside a passphrase-encrypted file.
 - Background sync per kind (channels, guide, films and series) with its own schedule; a failed or
   empty sync keeps the data you have and retries. Settings > Sync shows progress, counts and errors.
 - Starts instantly from stored data, then refreshes.
@@ -81,14 +81,14 @@ programmes, films and generated artwork), never real content.
 ### My list, organisation and safety
 - **My list**: rows of cards for continue watching, favourite channels, films, shows, programmes and recordings.
 - **Parental PIN**: lock groups, single channels and film / series categories (salted PBKDF2; waits after wrong tries).
-- Backup and restore of settings and organisation (never includes logins).
+- Encrypted backup and restore of everything you set up, logins included (Android; passphrase-protected file), to move to a new TV or reinstall.
 - Dark theme only, clear focus everywhere, works fully with a TV remote.
 - Android: optional "update available" check against this repository's releases (Settings > About; can be turned off).
 
 ### Privacy and security
 No ads, no analytics, no tracking, no account. tvBro talks only to the sources you add and, if the
 update check is on, once a day to the GitHub Releases API of this repository. Logins are stored
-encrypted and are never part of backups. Note that most IPTV services use plain HTTP and put your
+encrypted; an Android backup holds them only encrypted with your passphrase. Note that most IPTV services use plain HTTP and put your
 login in the stream address; that is how those services work, not something a player can change.
 Security reports: see [SECURITY.md](SECURITY.md) (also lists the release signing certificate).
 
@@ -111,7 +111,7 @@ Security reports: see [SECURITY.md](SECURITY.md) (also lists the release signing
 - Provider logins are encrypted at rest: Android with the Android Keystore (EncryptedSharedPreferences),
   desktop with Windows DPAPI or the Linux keyring (a private key file as fallback), the web server with
   a key stored outside its data folder (a root-only systemd credential).
-- Logins never appear in logs or in tvBro's backup files. Android cloud backup and device-to-device
+- Logins never appear in logs. On Android they go into a backup file only encrypted with your passphrase (AES-256-GCM); desktop backups hold no logins. Android cloud backup and device-to-device
   transfer are switched off for tvBro's data. Release builds of the Android app strip informational
 log output.
 - The parental PIN is stored only as a salted, slow hash (PBKDF2-SHA256).

@@ -312,8 +312,10 @@ private fun LazyListScope.other(m: AppModel) {
     item { SettingRow("Open the channels and groups editor", "rename, hide, reorder, own groups") { m.screen = Screen.EDITOR } }
     item { SettingRow("New custom group", "") { m.newGroup() } }
     item { SettingRow("Unhide all channels and groups", "") { m.unhideAll() } }
-    item { SettingRow("Back up settings and organisation", "app files dir /backup (no credentials)") { m.backup() } }
-    item { SettingRow("Restore from backup", "") { m.restore() } }
+    head("Backup")
+    item { SettingRow("Export backup", "everything incl. logins, encrypted with a passphrase") { m.exportBackup() } }
+    item { SettingRow("Import backup", "from the backup folder or a file; adds to what is here") { m.importBackup() } }
+    note("A backup holds your sources with their logins, favourites, channel layout, locks and PIN, settings, watch positions, reminders and recording lists, encrypted with the passphrase you choose (AES-256). Keep the passphrase: without it the file cannot be opened. Backup folder: Android/data/${io.github.kmmarin.tvbro.BuildConfig.APPLICATION_ID}/files/backup. Recorded files themselves are not in the backup.")
 }
 
 private object CoreTick { var v by androidx.compose.runtime.mutableIntStateOf(0) }
@@ -506,6 +508,8 @@ fun AddSourceScreen(m: AppModel) {
                     )
                 }
                 if (m.sources.isNotEmpty()) TvButton("Cancel") { m.screen = Screen.SETTINGS }
+                // moving from another TV or a reinstall: everything (logins too) from an encrypted backup file
+                else TvButton("Import a backup") { m.importBackup() }
             }
         }
     }

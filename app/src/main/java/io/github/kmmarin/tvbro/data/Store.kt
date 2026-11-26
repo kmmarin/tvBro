@@ -62,6 +62,19 @@ class Store(private val ctx: Context) {
         try { s.edit { putString(key, v) } } catch (e: Exception) { Diag.log("encrypted write failed (${e.javaClass.simpleName})") }
     }
 
+    /** The raw encrypted values of [keys] (for the encrypted backup file); null when the storage cannot be read. */
+    fun secureRaw(keys: List<String>): Map<String, String>? = try {
+        val s = secureOrNull() ?: retryOpen()
+        s?.let { p -> keys.mapNotNull { k -> p.getString(k, null)?.let { k to it } }.toMap() }
+    } catch (e: Exception) { Diag.log("encrypted values unreadable (${e.javaClass.simpleName})"); null }
+
+    /** Writes raw encrypted values at once (backup import); false when they could not be stored. */
+    fun putSecureRaw(m: Map<String, String>): Boolean {
+        if (m.isEmpty()) return true
+        val s = secureForWrite() ?: return false
+        return try { s.edit(commit = true) { for ((k, v) in m) putString(k, v) }; true } catch (e: Exception) { Diag.log("encrypted write failed (${e.javaClass.simpleName})"); false }
+    }
+
     fun sources(): List<Source> = try {
         Json.decodeFromString<List<Source>>(readSecure("sources", "[]") ?: "[]")
     } catch (e: Exception) { emptyList() }
