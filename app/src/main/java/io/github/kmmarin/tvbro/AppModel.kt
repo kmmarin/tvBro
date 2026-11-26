@@ -912,23 +912,103 @@ class AppModel(private val app: Application) : AndroidViewModel(app) {
 
     fun unhideAll() { savePrefs2(prefs.copy(hiddenCh = emptySet(), hiddenGroups = emptySet())); toast("All channels and groups visible") }
 
-    private fun backupFile() = java.io.File(app.getExternalFilesDir(null), "backup").apply { mkdirs() }.let { java.io.File(it, "tvbro-backup.json") }
+    /** The settings file of versions before 0.3.4 (no logins, plain JSON); it can still be restored. */
+    private fun backupFile() = java.io.File(BackupData.dir(app), "tvbro-backup.json")
 
-    fun backup() {
-        try {
-            // the PIN hash stays out of the backup file (it sits in shared storage)
-            val b = Backup(1, epgHours, epgShiftMin, startLast, bufferSec, store.recPadStart, store.recPadEnd, favourites, store.epgMap(), ParentalLock.forBackup(prefs))
-            val f = backupFile(); f.writeText(BackupIo.encode(b)); toast("Saved ${f.path}")
-        } catch (e: Exception) { toast("Backup failed: ${Net.describe(e)}") }
+    // ---- Encrypted backup (Settings > Backup): everything incl. logins, see FullBackup / BackupData ----
+    /** Set by the activity: opens the system file picker; false when this device has none. */
+    var pickBackupFile: (() -> Boolean)? = null
+
+    fun exportBackup() {
+        prompt = PromptState("Passphrase for the backup (at least ${FullBackup.MIN_PASS} characters)", "", true) { p1 ->
+            if (p1.length < FullBackup.MIN_PASS) { toast("Use at least ${FullBackup.MIN_PASS} characters"); return@PromptState }
+            prompt = PromptState("The same passphrase again", "", true) { p2 ->
+                if (p2 != p1) { toast("The passphrases are not the same"); return@PromptState }
+                toast("Saving the backup...")
+                viewModelScope.launch(Dispatchers.IO) {
+                    val msg = try {
+                        val b = BackupData.collect(app, store, BuildConfig.VERSION_NAME)
+                        val name = "tvbro-" + java.text.SimpleDateFormat("yyyyMMdd-HHmm", java.util.Locale.US).format(java.util.Date()) + FullBackup.EXT
+                        val f = java.io.File(BackupData.dir(app), name); val tmp = java.io.File(f.path + ".tmp")
+                        tmp.writeBytes(FullBackup.seal(b, p1))
+                        if (!tmp.renameTo(f)) { f.delete(); tmp.renameTo(f) }
+                        "Saved ${f.name} (${FullBackup.describe(FullBackup.counts(b))})"
+                    } catch (e: Exception) { "Backup failed: " + (if (e is BackupException) e.message else Net.describe(e)) }
+                    launchMain { menu = MenuState(msg, listOf("OK" to {}, "Where is it?" to { toast(BackupData.dir(app).path) })) }
+                }
+            }
+        }
+    }
+
+    /** With a PIN set it is asked first: an import can bring in sources and change the locks. */
+    fun importBackup() { if (prefs.pinHash.isNotEmpty()) askPin { chooseBackup() } else chooseBackup() }
+
+    private fun chooseBackup() {
+        viewModelScope.launch(Dispatchers.IO) {
+            val files = BackupData.files(app)
+            val old = backupFile().takeIf { it.exists() }
+            launchMain {
+                val items = ArrayList<Pair<String, () -> Unit>>()
+                for (f in files) items += f.name to { askPassphrase(f.name, f) { f.inputStream().use { i -> FullBackup.readFile(i) } } }
+                items += "Pick a file..." to { if (pickBackupFile?.invoke() != true) toast("No file picker on this device: copy the file to ${BackupData.dir(app).path}") }
+                if (old != null) items += "Settings file of older versions (no logins)" to { doRestore() }
+                menu = MenuState(if (files.isEmpty()) "Import backup: no backup in the backup folder" else "Import backup", items)
+            }
+        }
+    }
+
+    /** From the system file picker. */
+    fun importFromUri(uri: android.net.Uri) {
+        askPassphrase(uri.lastPathSegment?.substringAfterLast('/') ?: "backup", null) {
+            app.contentResolver.openInputStream(uri)?.use { i -> FullBackup.readFile(i) } ?: throw BackupException("the file cannot be read")
+        }
     }
 
     /**
-     * Restores settings from the backup file. With a PIN set it asks for it first (a restore can change the locks),
-     * and the current PIN always stays: a backup never brings in or removes a PIN.
+     * Asks the passphrase, opens the file, shows what it holds and merges it after a confirmation. A file of the
+     * backup folder ([own]) is deleted after a successful import (it holds logins).
      */
-    fun restore() {
-        if (ParentalLock.restoreNeedsPin(prefs)) askPin { doRestore() } else doRestore()
+    private fun askPassphrase(name: String, own: java.io.File?, read: () -> ByteArray) {
+        prompt = PromptState("Passphrase of $name", "", true) { pass ->
+            toast("Opening the backup...")
+            viewModelScope.launch(Dispatchers.IO) {
+                val b = try { FullBackup.open(read(), pass) } catch (e: Exception) {
+                    launchMain { toast("Import failed: " + (if (e is BackupException) e.message else Net.describe(e))) }; return@launch
+                }
+                val what = FullBackup.describe(FullBackup.counts(b))
+                launchMain {
+                    menu = MenuState("Import $what?", listOf(
+                        "Import (adds to what is here)" to { applyBackup(b, own) },
+                        "Cancel" to {},
+                    ))
+                }
+            }
+        }
     }
+
+    private fun applyBackup(b: BackupBundle, own: java.io.File?) {
+        toast("Importing...")
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                BackupData.apply(app, store, b)
+                val kept = own != null && own.exists() && !own.delete()
+                val c = FullBackup.counts(b)
+                Diag.log("backup imported: ${c.sources} sources, ${c.favourites} favourites, ${c.settings} settings, ${c.watch} watch rows")
+                launchMain {
+                    val restart = { RestartActivity.restart(app) { } }
+                    menu = MenuState("Imported. tvBro restarts to load it.", listOfNotNull(
+                        "Restart now" to restart,
+                        FullBackup.describe(c) to restart,
+                        (if (kept) "Delete ${own!!.name} yourself: it holds your logins" else null)?.let { it to restart },
+                    ))
+                }
+            } catch (e: Exception) {
+                launchMain { toast("Import failed: " + (if (e is BackupException) e.message else Net.describe(e))) }
+            }
+        }
+    }
+
+    private fun launchMain(f: () -> Unit) { viewModelScope.launch(Dispatchers.Main) { f() } }
 
     private fun doRestore() {
         try {

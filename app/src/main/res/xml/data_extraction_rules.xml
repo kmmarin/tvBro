@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!-- Copyright 2026 The tvBro authors. SPDX-License-Identifier: Apache-2.0 -->
 <!-- Android 12+: nothing of tvBro goes to cloud backup or to a new device (playlists, guide and caches can
-     contain provider logins). Users move settings with the app's own backup file, which has no logins. -->
+     contain provider logins). Users move to a new device with the app's own backup file, encrypted with their passphrase. -->
 <data-extraction-rules>
     <cloud-backup>
         <exclude domain="root" path="." />

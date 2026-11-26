@@ -44,7 +44,7 @@ repository's releases.
 | | Android | Desktop (Windows, Linux) | Web server |
 |---|---|---|---|
 | Provider login at rest | EncryptedSharedPreferences (Android Keystore) | Windows DPAPI; Linux keyring, or a private key file as fallback | encrypted with a key kept outside the data folder (root-only systemd credential) |
-| Login in logs / backup files | no | no (except the opt-in mpv debug log `TVBRO_MPV_LOG`, which can contain stream addresses) | no |
+| Login in logs / backup files | never in logs; in a backup only inside the passphrase-encrypted file (AES-256-GCM, PBKDF2-HMAC-SHA256 200,000 rounds), sealed again with the new device's Keystore key on import | no (except the opt-in mpv debug log `TVBRO_MPV_LOG`, which can contain stream addresses) | no |
 | OS cloud backup / device transfer | switched off for tvBro's data | n/a | n/a |
 | Parental PIN | salted PBKDF2-SHA256 hash | salted PBKDF2-SHA256, waits after wrong tries | salted hash, waits after wrong tries; the optional admin password is throttled too |
 | Telemetry, analytics, crash reports | none | none | none |
@@ -76,9 +76,11 @@ repository's releases.
 
 1. **Change your provider password** (and the provider PIN if it has one) at your provider. This makes
    a stolen login useless, whatever was on the device.
-2. **Android / desktop**: back up your settings in tvBro if you want them (backups contain no login),
-   uninstall tvBro or delete its data folder, reinstall from this repository's releases, restore the
-   backup and add the new login.
+2. **Android**: export a backup if you want your setup (it holds the old login, encrypted with your
+   passphrase), uninstall tvBro, reinstall from this repository's releases, import the backup, then change
+   the login in Settings > Playlists to the new one and delete the backup file. **Desktop**: back up your
+   settings (desktop backups contain no login), delete tvBro's data folder, reinstall, restore the backup and
+   add the new login.
 3. **Web server**: turn on or change the password in Settings > Security, then sign in to the provider again with the
    new login. There is no automated rotation of the server's encryption key yet; until there is,
    re-provision the container (fresh install with a new key) if the server itself was compromised.

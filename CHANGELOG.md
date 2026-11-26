@@ -3,6 +3,31 @@
 All notable changes to tvBro. Versions follow `MAJOR.MINOR.PATCH`; the Android app's version code is
 `MAJOR * 10000 + MINOR * 100 + PATCH`.
 
+## 0.3.4 (Android)
+
+### Added
+- **Encrypted backup** (Settings > Channels and groups > Backup): **Export backup** saves everything you set up in one
+  file: sources with their logins, favourites, channel layout, locks and PIN, all settings, watch
+  positions and shows' progress, reminders, series rules and the recording and download lists. The file is
+  encrypted with a passphrase you choose (AES-256-GCM, key from PBKDF2-HMAC-SHA256, 200,000 rounds).
+  **Import backup** opens one from the backup folder or with the system file picker, shows what it holds,
+  adds it to what is already on the device (nothing is removed; a PIN set here stays) and seals the logins
+  again with this device's own key. An imported file from the backup folder is deleted afterwards.
+  Moving tvBro to a new TV or reinstalling it no longer means typing logins again.
+- **Import a backup** straight from the first screen (Add source) of a new install.
+
+### Changed
+- The plain settings backup without logins is replaced by the encrypted backup; a settings file of an
+  older version can still be restored from Import backup.
+
+### Fixed
+- **Password fields** (provider password, PIN, passphrase) now tell the on-screen keyboard they are
+  passwords: keyboards no longer learn or suggest them, and the Fire TV keyboard shows them in its password
+  font with its Hide Password key (it treated them as ordinary text before).
+
+### Security
+- Rust core: `url` 2.5.9 (RUSTSEC-2026-0592, stack overflow on nested `blob:` URLs) and `form_urlencoded` 1.2.3.
+
 ## 0.3.3 (Android)
 
 ### Changed
@@ -31,7 +56,7 @@ All notable changes to tvBro. Versions follow `MAJOR.MINOR.PATCH`; the Android a
 - **Touch everywhere**: on touch screens, tap a multiview tile to move the sound to it and hold a tile
   for its options; hold anywhere in the player for the action icons (same as holding OK); swipe up or
   tap the chevron under the banner to open its rows, swipe down to close them; settings changed with
-  left/right have on-screen ‹ › buttons.
+  left/right have on-screen â€¹ â€º buttons.
 - The multiview sound marker is a speaker icon (the old note symbol was missing on some devices).
 
 ### Fixed

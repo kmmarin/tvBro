@@ -98,7 +98,13 @@ fun TvField(
                 value = value, onValueChange = onChange, singleLine = true,
                 textStyle = TextStyle(color = TextMain, fontSize = 18.sp),
                 cursorBrush = SolidColor(Accent),
-                keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(imeAction = androidx.compose.ui.text.input.ImeAction.Done),
+                // a password field says so to the keyboard: the Fire TV's full-screen keyboard otherwise shows it in
+                // clear text and keyboards may learn it
+                keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(
+                    imeAction = androidx.compose.ui.text.input.ImeAction.Done,
+                    keyboardType = if (password) androidx.compose.ui.text.input.KeyboardType.Password else androidx.compose.ui.text.input.KeyboardType.Text,
+                    autoCorrectEnabled = !password,
+                ),
                 keyboardActions = androidx.compose.foundation.text.KeyboardActions(onDone = { kb?.hide(); hideIme(view); editing = false }),
                 visualTransformation = if (password) androidx.compose.ui.text.input.PasswordVisualTransformation()
                 else androidx.compose.ui.text.input.VisualTransformation.None,
